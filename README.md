@@ -61,7 +61,7 @@
 
 ## 下载和安装
 
-1. 从 [Releases](https://github.com/your-username/yt-dlp-gui-windows/releases) 页面下载最新版本
+1. 从 [Releases](https://github.com/luluyayawawa123/yt-dlp-gui-windows/releases) 页面下载最新版本
 2. 解压到任意位置
 3. 运行 YT-DLP-GUI-Windows.exe
 
