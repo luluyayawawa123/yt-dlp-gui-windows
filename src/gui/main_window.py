@@ -23,16 +23,15 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("YT-DLP GUI for Windows")
         
         # 设置最小窗口大小
-        self.setMinimumSize(700, 800)  # 修改最小宽度为700
+        self.setMinimumSize(700, 690)  # 从800减小到735
         
         # 设置初始窗口大小
-        self.resize(700, 800)
+        self.resize(700, 690)  # 从800减小到735
         
         # 获取屏幕几何信息并居中显示
         screen = QApplication.primaryScreen().geometry()
-        # 计算窗口位置，确保完全居中且不会超出屏幕
         x = max(0, (screen.width() - 700) // 2)
-        y = max(0, (screen.height() - 800) // 2 - 40)  # 向上移动40像素
+        y = max(0, (screen.height() - 690) // 2 - 60)  # 相应调整y坐标
         self.move(x, y)
         
         # 创建主窗口部件
@@ -71,7 +70,7 @@ class MainWindow(QMainWindow):
         # 创建主布局
         layout = QVBoxLayout(self.main_container)
         layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(16)
+        layout.setSpacing(10)  # 减小整体间距
         
         # 设置窗口整体样式 - YouTube风格
         self.setStyleSheet("""
@@ -149,44 +148,32 @@ class MainWindow(QMainWindow):
             }
         """)
 
-        # URL输入区域
+        # URL输入区域调整
         url_layout = QVBoxLayout()
+        url_layout.setSpacing(2)  # 保持紧凑的间距
         url_label = QLabel("视频URLs (每行一个):")
         self.url_input = QTextEdit()
         self.url_input.setPlaceholderText("在此输入一个或多个YouTube视频链接，每行一个")
-        self.url_input.setMinimumHeight(100)
+        self.url_input.setMinimumHeight(84)  # 从45增加到84
+        self.url_input.setMaximumHeight(84)  # 同样设置最大高度
         url_layout.addWidget(url_label)
         url_layout.addWidget(self.url_input)
         layout.addLayout(url_layout)
         
-        # 下载路径选择区域
+        # 下载路径选择区域调整
         path_layout = QHBoxLayout()
+        path_layout.setSpacing(8)  # 调整水平间距
         path_label = QLabel("下载位置:")
         self.path_input = QLineEdit()
-        self.browse_button = QPushButton("浏览...")  # 先创建按钮
-        self.browse_button.clicked.connect(self.browse_directory)
-        
-        # 现在可以设置浏览按钮样式了
-        self.browse_button.setStyleSheet("""
-            QPushButton {
-                background: #F1F1F1;
-                color: #0F0F0F;
-                border: none;
-                border-radius: 6px;
-                padding: 8px 16px;
-            }
-            QPushButton:hover {
-                background: #E5E5E5;
-            }
-        """)
-        
+        self.browse_button = QPushButton("浏览...")
         path_layout.addWidget(path_label)
         path_layout.addWidget(self.path_input)
         path_layout.addWidget(self.browse_button)
         layout.addLayout(path_layout)
         
-        # 添加浏览器选择
+        # 浏览器选择区域调整
         browser_layout = QHBoxLayout()
+        browser_layout.setSpacing(8)
         browser_label = QLabel("使用浏览器 Cookies:")
         self.browser_combo = QComboBox()
         # Windows 支持的浏览器
@@ -201,8 +188,24 @@ class MainWindow(QMainWindow):
         browser_layout.addWidget(self.browser_combo)
         layout.addLayout(browser_layout)
         
-        # 画质选择和播放列表下载按钮放在同一行
+        # 添加浏览器提示（移到浏览器选择下方）
+        browser_tip = QLabel(
+            "提示：YouTube 现在要求登录才能使用，请使用 Firefox 火狐浏览器（安装版，不要使用便携版）。使用前请确保已在 Firefox 中登录 YouTube/Google 账号。"
+        )
+        browser_tip.setStyleSheet("""
+            color: #606060;
+            font-size: 12px;
+            padding: 6px;
+            background: #F8F8F8;
+            border-radius: 6px;
+            margin: 4px 0;
+        """)
+        browser_tip.setWordWrap(True)
+        layout.addWidget(browser_tip)
+        
+        # 画质选择和播放列表下载按钮布局调整
         quality_layout = QHBoxLayout()
+        quality_layout.setSpacing(8)
         quality_label = QLabel("画质选择:")
         self.quality_combo = QComboBox()
         self.quality_combo.addItems([
@@ -224,25 +227,9 @@ class MainWindow(QMainWindow):
         quality_layout.addWidget(quality_label)
         quality_layout.addWidget(self.quality_combo)
         quality_layout.addWidget(self.subtitle_checkbox)
-        quality_layout.addStretch()  # 添加弹性空间
-        quality_layout.addWidget(self.playlist_button)  # 放在最右边
+        quality_layout.addStretch()
+        quality_layout.addWidget(self.playlist_button)
         layout.addLayout(quality_layout)
-        
-        # 添加浏览器提示（简化并优化样式）
-        browser_tip = QLabel(
-            "提示：YouTube 现在要求登录才能观看视频，请使用 Firefox 火狐浏览器（安装版，不要使用便携版）。\n"
-            "使用前请确保已在 Firefox 中登录 YouTube/Google 账号。"
-        )
-        browser_tip.setStyleSheet("""
-            color: #606060;
-            font-size: 12px;
-            padding: 8px;
-            background: #F8F8F8;
-            border-radius: 6px;
-            margin: 8px 0;
-        """)
-        browser_tip.setWordWrap(True)
-        layout.addWidget(browser_tip)
         
         # 控制按钮区域
         button_layout = QHBoxLayout()
@@ -482,7 +469,7 @@ class MainWindow(QMainWindow):
         status_label = QLabel("⏳ 准备中")
         status_label.setStyleSheet("""
             color: #666;
-            font-size: 11px;
+            font-size: 11px;  /* 改回11px */
             line-height: 1.1;
             padding: 2px 8px;
         """)
@@ -679,7 +666,12 @@ class MainWindow(QMainWindow):
                 
                 # 更新状态
                 task_widget.status_label.setText("⏬ 下载中")
-                task_widget.status_label.setStyleSheet("color: #2196F3;")
+                task_widget.status_label.setStyleSheet("""
+                    color: #2196F3;
+                    font-size: 11px;
+                    line-height: 1.1;
+                    padding: 2px 8px;
+                """)
                 task_widget.progress_label.setText("准备下载...")
                 task_widget.progress_bar.setValue(0)
                 
@@ -688,16 +680,19 @@ class MainWindow(QMainWindow):
                     lambda: self.open_download_folder(self.path_input.text())
                 )
             elif "下载进度" in message:
-                # 解析进度信息
                 try:
-                    # 示例: [download]  23.4% of 50.75MiB at 2.52MiB/s ETA 00:15
                     percent = float(message.split('%')[0].split()[-1])
                     task_widget.progress_bar.setValue(int(percent))
                 except Exception:
                     pass
                 task_widget.progress_label.setText(message)
                 task_widget.status_label.setText("⏬ 下载中")
-                task_widget.status_label.setStyleSheet("color: #2196F3;")
+                task_widget.status_label.setStyleSheet("""
+                    color: #2196F3;
+                    font-size: 11px;
+                    line-height: 1.1;
+                    padding: 2px 8px;
+                """)
             elif "正在合并" in message:
                 task_widget.progress_bar.setValue(100)
                 task_widget.progress_bar.setStyleSheet("""
@@ -725,7 +720,12 @@ class MainWindow(QMainWindow):
                 """)
                 task_widget.progress_label.setText(message)
                 task_widget.status_label.setText("✓ 已完成")
-                task_widget.status_label.setStyleSheet("color: #4CAF50;")
+                task_widget.status_label.setStyleSheet("""
+                    color: #4CAF50;
+                    font-size: 11px;  /* 改回11px */
+                    line-height: 1.1;
+                    padding: 2px 8px;
+                """)
 
     def download_finished(self, success, message, title, task_id):
         """处理下载完成事件"""
@@ -736,7 +736,12 @@ class MainWindow(QMainWindow):
         
         if success:
             task_widget.status_label.setText("✓ 已完成")
-            task_widget.status_label.setStyleSheet("color: #4CAF50")
+            task_widget.status_label.setStyleSheet("""
+                color: #4CAF50;
+                font-size: 11px;  /* 改回11px */
+                line-height: 1.1;
+                padding: 2px 8px;
+            """)
             task_widget.open_button.show()  # 确保显示打开文件夹按钮
             task_widget.open_button.setStyleSheet("""
                 QPushButton {
@@ -753,9 +758,12 @@ class MainWindow(QMainWindow):
             """)
         else:
             task_widget.status_label.setText("❌ 下载失败")
-            task_widget.status_label.setStyleSheet("color: #F44336")
-            task_widget.progress_label.setText("下载失败")
-            task_widget.progress_label.setStyleSheet("color: #F44336")
+            task_widget.status_label.setStyleSheet("""
+                color: #F44336;
+                font-size: 11px;  /* 改回11px */
+                line-height: 1.1;
+                padding: 2px 8px;
+            """)
             task_widget.open_button.hide()  # 失败时隐藏按钮
         
         self.completed_urls += 1

@@ -1,5 +1,8 @@
 # YT-DLP GUI for Windows
 
+![软件界面截图](screenshots/main.png)
+![软件界面截图](screenshots/main-2.png)
+
 一个简单易用的 YouTube 视频下载工具，基于著名开源工具 yt-dlp 开发的 Windows 图形界面程序。
 
 ## 主要功能
@@ -41,7 +44,7 @@
    https://www.youtube.com/playlist?list=YOUR_PLAYLIST_ID
    ```
    在 YouTube APP 或网页版中创建自己的播放列表，将想要下载的视频添加到该播放列表中，
-   然后复制该播放列表的链接，粘贴到软件的播放列表模式中，保存到收藏夹。下载的时候，勾选"跳过曾经下载过的视频"选项，实现只下载新增的内容。
+   然后复制该播放列表的链接，粘贴到软件的播放列表模式中，保存到收藏夹。下载的时候，勾选"跳过曾经下载过的视频"选项，只下载新增内容。
 
 
 ## 注意事项
