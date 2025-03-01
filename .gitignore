@@ -55,7 +55,6 @@ dist/
 build/
 eggs/
 parts/
-bin/
 var/
 sdist/
 develop-eggs/
@@ -85,4 +84,9 @@ coverage.xml
 coverage/
 
 # 忽略打包或转换文件
-YT-DLP-GUI-Windows.spec 
+YT-DLP-GUI-Windows.spec
+
+# 保留bin目录但忽略其中某些文件
+bin/*
+!bin/*.exe
+!bin/*.dll 
