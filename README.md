@@ -33,13 +33,13 @@
 
 
 典型使用场景示例：
-1. **订阅喜欢的 YouTube 频道**
+1. **订阅你喜欢的 YouTube 频道**
    ```
    https://www.youtube.com/@YourFavoriteChannel/videos
    ```
    下载频道中的所有视频。
 
-2. **订阅自己创建的播放列表**
+2. **订阅你自己创建的播放列表**
    ```
    https://www.youtube.com/playlist?list=YOUR_PLAYLIST_ID
    ```
