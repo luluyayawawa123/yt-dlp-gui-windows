@@ -1,0 +1,88 @@
+# 构建文件
+/build/
+/dist/
+*.spec
+
+# Python缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+
+# 配置和日志
+/config/
+*.log
+*.log.*
+debug.log
+
+# 用户数据文件
+/downloaded_videos_list.txt
+downloaded_videos_list.txt
+
+# 虚拟环境
+/.venv/
+/venv/
+/ENV/
+/env/
+/.env/
+
+# IDE配置
+.idea/
+.vscode/
+*.swp
+*.swo
+.project
+.pydevproject
+.settings/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 临时文件
+*.tmp
+*.bak
+*~
+*.cache
+
+# 包文件
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+bin/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+wheels/
+share/python-wheels/
+*.egg-info/
+.eggs/
+
+# 安装记录
+pip-log.txt
+pip-delete-this-directory.txt
+pip-selfcheck.json
+
+# 缓存的查询
+.coverage
+htmlcov/
+.tox/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.coverage.*
+coverage/
+
+# 忽略打包或转换文件
+YT-DLP-GUI-Windows.spec 
