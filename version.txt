@@ -16,12 +16,12 @@ VSVersionInfo(
         '040904B0',
         [StringStruct('CompanyName', ''),
         StringStruct('FileDescription', 'YT-DLP GUI for Windows'),
-        StringStruct('FileVersion', '1.0.1'),
+        StringStruct('FileVersion', '1.0.2'),
         StringStruct('InternalName', 'YT-DLP GUI for Windows'),
         StringStruct('LegalCopyright', ''),
         StringStruct('OriginalFilename', 'YT-DLP-GUI-Windows.exe'),
         StringStruct('ProductName', 'YT-DLP GUI for Windows'),
-        StringStruct('ProductVersion', '1.0.1')])
+        StringStruct('ProductVersion', '1.0.2')])
       ]), 
     VarFileInfo([VarStruct('Translation', [1033, 1200])])
   ]
