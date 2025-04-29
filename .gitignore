@@ -89,4 +89,5 @@ YT-DLP-GUI-Windows.spec
 # 保留bin目录但忽略其中某些文件
 bin/*
 !bin/*.exe
-!bin/*.dll 
+!bin/*.dll
+!bin/*.bat
