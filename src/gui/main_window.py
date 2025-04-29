@@ -38,13 +38,17 @@ class MainWindow(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("YT-DLP GUI for Windows")
+        
+        # 获取应用程序实例和版本号
+        app = QApplication.instance()
+        version = app.applicationVersion()
+        self.setWindowTitle(f"YT-DLP GUI for Windows v{version}")
         
         # 设置最小窗口大小
-        self.setMinimumSize(700, 690)  # 从800减小到735
+        self.setMinimumSize(700, 600)  # 从640减小到600
         
         # 设置初始窗口大小
-        self.resize(700, 690)  # 从800减小到735
+        self.resize(700, 600)  # 从640减小到600
         
         # 获取应用程序实例和主屏幕
         app = QApplication.instance()
@@ -52,11 +56,11 @@ class MainWindow(QMainWindow):
         # 获取屏幕的实际可用区域（考虑任务栏和系统UI）
         screen = QApplication.primaryScreen().availableGeometry()  # 使用可用区域而非总区域
         x = max(0, (screen.width() - 700) // 2 + screen.x())  # 考虑屏幕起始位置
-        y = max(0, (screen.height() - 690) // 2 + screen.y())  # 考虑屏幕起始位置
+        y = max(0, (screen.height() - 600) // 2 + screen.y())  # 考虑屏幕起始位置
         
         # 确保窗口完全可见（即底部不会超出屏幕）
-        if y + 690 > screen.y() + screen.height():
-            y = max(0, screen.y() + screen.height() - 690)
+        if y + 600 > screen.y() + screen.height():
+            y = max(0, screen.y() + screen.height() - 600)
         
         self.move(x, y)
         
@@ -88,8 +92,8 @@ class MainWindow(QMainWindow):
         """初始化用户界面"""
         # 创建主布局
         layout = QVBoxLayout(self.main_container)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(10)  # 减小整体间距
+        layout.setContentsMargins(15, 10, 15, 10)  # 减小边距
+        layout.setSpacing(8)  # 减小整体间距
         
         # 设置字体
         app = QApplication.instance()
@@ -272,12 +276,15 @@ class MainWindow(QMainWindow):
         """)  # 优化字体样式，保持原有文本
         self.url_input = QTextEdit()
         self.url_input.setPlaceholderText("在此输入一个或多个YouTube视频链接，每行一个")
-        self.url_input.setMaximumHeight(120)
+        self.url_input.setAcceptRichText(False)
+        self.url_input.setFixedHeight(90)  # 减小URL输入区域高度
         layout.addWidget(url_label)
         layout.addWidget(self.url_input)
         
         # 下载位置选择区域
         location_layout = QHBoxLayout()
+        location_layout.setContentsMargins(0, 0, 0, 0)  # 减少边距
+        location_layout.setSpacing(5)  # 减少间距
         location_label = QLabel("下载位置:")
         self.location_input = QLineEdit()
         
@@ -290,6 +297,7 @@ class MainWindow(QMainWindow):
             self.location_input.setText(os.path.join(os.path.expanduser("~"), "Downloads"))
         
         self.browse_button = QPushButton("浏览...")
+        self.browse_button.setFixedWidth(60)  # 设置固定宽度
         self.browse_button.clicked.connect(self.browse_location)  # 确保连接到槽函数
         
         location_layout.addWidget(location_label)
@@ -299,12 +307,15 @@ class MainWindow(QMainWindow):
         
         # 浏览器选择区域 - 调整布局将提示文字放到右侧
         browser_container = QHBoxLayout()  # 创建一个水平容器来放置浏览器选择和提示文字
+        browser_container.setContentsMargins(0, 0, 0, 0)  # 减少容器的内边距
 
         # 左侧放浏览器选择
         browser_layout = QHBoxLayout()
+        browser_layout.setContentsMargins(0, 0, 0, 0)  # 减少布局的内边距
+        browser_layout.setSpacing(5)  # 减少元素间的间距
         browser_label = QLabel("浏览器:")  # 修改文本
         self.browser_combo = QComboBox()
-        self.browser_combo.setFixedWidth(250)  # 限制下拉框宽度
+        self.browser_combo.setFixedWidth(220)  # 缩小下拉框宽度
 
         # Windows 支持的浏览器
         browsers = [
@@ -319,10 +330,9 @@ class MainWindow(QMainWindow):
         browser_layout.addStretch(1)  # 添加弹性空间，使控件靠左对齐
 
         # 右侧放提示文字
-        browser_hint = QLabel("提示: 在大部分节点下，YouTube 要求登录使用。请在 Firefox 火狐浏览器(不要使用便携版)中保持登录状态。")
+        browser_hint = QLabel("提示: 需在Firefox火狐浏览器中保持登录状态。")
         browser_hint.setProperty("isSubLabel", "true")  # 标记为次要标签
-        browser_hint.setWordWrap(True)
-        browser_hint.setStyleSheet(f"background-color: {self.COLORS['surface']}; padding: 8px; border-radius: 4px;")
+        browser_hint.setStyleSheet(f"color: {self.COLORS['text_secondary']}; font-size: 9pt;")
 
         # 将浏览器选择和提示文字添加到水平容器
         browser_container.addLayout(browser_layout, 1)  # 浏览器选择占1比例
@@ -333,7 +343,8 @@ class MainWindow(QMainWindow):
         
         # 画质选择和播放列表下载按钮布局调整
         quality_layout = QHBoxLayout()
-        quality_layout.setSpacing(8)
+        quality_layout.setContentsMargins(0, 0, 0, 0)  # 减少边距
+        quality_layout.setSpacing(5)  # 减少间距
         quality_label = QLabel("画质选择:")
         self.quality_combo = QComboBox()
         self.quality_combo.addItems([
@@ -347,12 +358,12 @@ class MainWindow(QMainWindow):
         self.quality_combo.setCurrentIndex(0)  # 默认选择最佳画质
 
         # 添加字幕下载选项
-        self.subtitle_checkbox = QCheckBox("下载字幕（.srt格式）")
+        self.subtitle_checkbox = QCheckBox("下载字幕")
         self.subtitle_checkbox.setChecked(False)  # 默认不勾选
         self.subtitle_checkbox.setToolTip("下载视频的所有可用字幕(srt格式)")
 
         # 添加播放列表下载按钮
-        self.playlist_button = QPushButton("切换到播放列表/频道下载模式")
+        self.playlist_button = QPushButton("切换到播放列表/频道模式")
         self.playlist_button.clicked.connect(self.open_playlist_window)
         
         quality_layout.addWidget(quality_label)
@@ -366,7 +377,7 @@ class MainWindow(QMainWindow):
         button_layout = QHBoxLayout()
         self.download_button = QPushButton("开始下载")
         self.download_button.setObjectName("primaryButton")  # 添加这一行，标记为主要按钮
-        self.download_button.setMinimumHeight(40)  # 稍微增大高度，提高可见性
+        self.download_button.setMinimumHeight(36)  # 减小按钮高度
         self.download_button.setCursor(Qt.CursorShape.PointingHandCursor)  # 鼠标悬停显示手型光标
         self.download_button.clicked.connect(self.start_download)
         button_layout.addWidget(self.download_button)
@@ -374,6 +385,7 @@ class MainWindow(QMainWindow):
         
         # 添加下载任务显示区域
         downloads_label = QLabel("下载任务:")
+        downloads_label.setContentsMargins(0, 0, 0, 2)  # 减少标签下方边距
         layout.addWidget(downloads_label)
         
         # 创建下载任务容器
@@ -386,8 +398,8 @@ class MainWindow(QMainWindow):
         scroll_area = QScrollArea()
         scroll_area.setWidget(self.downloads_area)
         scroll_area.setWidgetResizable(True)
-        scroll_area.setMinimumHeight(260)
-        scroll_area.setMaximumHeight(400)
+        scroll_area.setMinimumHeight(230)  # 从260减少到230
+        scroll_area.setMaximumHeight(350)  # 从400减少到350
         scroll_area.setObjectName("tasksScrollArea")  # 添加这一行，用于应用样式
         layout.addWidget(scroll_area)
         
@@ -398,7 +410,7 @@ class MainWindow(QMainWindow):
                 color: white;
                 border: none;
                 border-radius: 6px;
-                padding: 10px 32px;
+                padding: 8px 28px;  /* 减小内边距 */
                 font-size: 14px;
                 font-weight: 500;
                 min-width: 140px;
@@ -416,9 +428,6 @@ class MainWindow(QMainWindow):
                 background: #808080;
             }
         """)
-        
-        # 在所有现有控件之后,添加一个分隔空间
-        layout.addStretch()
         
     def update_history_display(self):
         """更新下载历史显示"""
@@ -520,7 +529,7 @@ class MainWindow(QMainWindow):
         # 创建任务容器
         task_widget = QWidget()
         task_widget.setObjectName("taskWidget")  # 添加ID以应用圆角样式
-        task_widget.setFixedHeight(80)  # 从85改为80，稍微压缩一下每个任务的高度
+        task_widget.setFixedHeight(75)  # 从80改为75，进一步压缩任务的高度
         
         # 为任务小部件设置圆角和边框样式
         task_widget.setStyleSheet("""
@@ -533,14 +542,14 @@ class MainWindow(QMainWindow):
         """)
         
         layout = QVBoxLayout(task_widget)
-        layout.setContentsMargins(10, 3, 10, 3)
-        layout.setSpacing(2)
+        layout.setContentsMargins(10, 2, 10, 2)  # 减少上下内边距
+        layout.setSpacing(1)  # 减小元素间距
         
         # 创建内容区域
         content_widget = QWidget()
         content_layout = QVBoxLayout(content_widget)
-        content_layout.setSpacing(1)  # 减小元素间距
-        content_layout.setContentsMargins(0, 2, 0, 2)
+        content_layout.setSpacing(0)  # 减小元素间距
+        content_layout.setContentsMargins(0, 1, 0, 1)  # 减少内边距
         
         # 视频标题样式优化
         title_label = QLabel("正在获取视频信息...")
@@ -552,7 +561,7 @@ class MainWindow(QMainWindow):
             font-family: "Microsoft YaHei UI", "PingFang SC", sans-serif;
         """)
         title_label.setWordWrap(True)
-        title_label.setFixedHeight(32)  # 设置标题固定高度，约两行文字
+        title_label.setFixedHeight(30)  # 从32减小到30
         
         # URL
         url_label = QLabel(f"URL: {url}")
@@ -562,7 +571,7 @@ class MainWindow(QMainWindow):
             line-height: 1;  /* 减小行高 */
         """)
         url_label.setWordWrap(True)
-        url_label.setFixedHeight(15)  # 设置URL固定高度
+        url_label.setFixedHeight(14)  # 从15减小到14
         content_layout.addWidget(title_label)
         content_layout.addWidget(url_label)
         

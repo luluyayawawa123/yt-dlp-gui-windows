@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, 
                            QPushButton, QLineEdit, QLabel, QMessageBox, QTextEdit, QHBoxLayout, QFileDialog, QComboBox, QCheckBox, QDialog,
-                           QStyle, QSizePolicy)
+                           QStyle, QSizePolicy, QApplication)
 from PyQt6.QtCore import Qt, QProcess, QProcessEnvironment
 from PyQt6.QtGui import QTextCursor
 from .saved_urls_dialog import SavedURLsDialog
@@ -20,7 +20,10 @@ class PlaylistWindow(QMainWindow):
         
     def setup_ui(self):
         """设置界面"""
-        self.setWindowTitle("播放列表/频道下载模式")
+        # 获取应用程序实例和版本号
+        app = QApplication.instance()
+        version = app.applicationVersion()
+        self.setWindowTitle(f"播放列表/频道下载模式 v{version}")
         self.setMinimumSize(700, 500)
         self.setMaximumWidth(800)  # 限制最大宽度
         self.resize(700, 500)
