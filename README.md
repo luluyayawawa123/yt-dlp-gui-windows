@@ -16,6 +16,18 @@
 - 支持订阅播放列表
 - 可以跳过已下载视频（播放列表/频道下载模式），只下载新增内容
 
+## 系统要求
+
+- Windows 10/11
+- Firefox 浏览器（必需）
+- 网络连接
+
+## 下载和安装
+
+1. 从 [Releases](https://github.com/luluyayawawa123/yt-dlp-gui-windows/releases) 页面下载最新版本
+2. 解压到任意位置
+3. 运行 YT-DLP-GUI-Windows.exe
+
 ## 使用方法
 
 1. **单个视频下载**
@@ -46,7 +58,6 @@
    在 YouTube APP 或网页版中创建自己的播放列表，将想要下载的视频添加到该播放列表中，
    然后复制该播放列表的链接，粘贴到软件的播放列表模式中，保存到收藏夹。下载的时候，勾选"跳过曾经下载过的视频"选项，只下载新增的视频内容。
 
-
 ## 注意事项
 
 - 目前 YouTube 不支持游客观看视频，所以请先在 Firefox 中登录 YouTube/Google 账号
@@ -63,18 +74,6 @@
 - 双击运行 `bin/更新内核.bat` 可将yt-dlp更新到最新版本
 - 这能解决大部分下载失败问题，建议遇到问题时优先尝试
 - 推荐定期更新内核保持最佳兼容性
-
-## 系统要求
-
-- Windows 10/11
-- Firefox 浏览器（必需）
-- 网络连接
-
-## 下载和安装
-
-1. 从 [Releases](https://github.com/luluyayawawa123/yt-dlp-gui-windows/releases) 页面下载最新版本
-2. 解压到任意位置
-3. 运行 YT-DLP-GUI-Windows.exe
 
 ## 常见问题
 
