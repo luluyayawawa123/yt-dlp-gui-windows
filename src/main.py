@@ -34,7 +34,7 @@ def main():
     
     # 设置应用程序信息
     app.setApplicationName("YT-DLP GUI for Windows")
-    app.setApplicationVersion("1.0.4")
+    app.setApplicationVersion("1.0.5")
     
     window = MainWindow()
     window.show()
