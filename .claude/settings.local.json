@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(timeout:*)",
+      "Bash(pip install:*)",
+      "Bash(mkdir:*)",
+      "Bash(dir:*)",
+      "Bash(\"C:\\字幕工作流\\yt-dlp-gui-windows\\dist\\YT-DLP-GUI-Windows-v1.0.5\\YT-DLP-GUI-Windows.exe\")",
+      "WebFetch(domain:github.com)",
+      "Bash(bin\\yt-dlp.exe:*)",
+      "Bash(\"C:\\字幕工作流\\yt-dlp-gui-windows\\bin\\yt-dlp.exe\" --version)",
+      "Bash(powershell:*)",
+      "Bash(del test_platform_detection.py test_xiaohongshu_download.py)",
+      "Bash(rm:*)",
+      "Bash(\"C:\\字幕工作流\\yt-dlp-gui-windows\\bin\\yt-dlp.exe\" --list-formats --user-agent \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\" \"https://www.xiaohongshu.com/explore/68346a0f000000002300ec58?xsec_token=ABMd01rILMxnY5Lr1SNZxmMObrJeApT3sosJym8_pDQRo=&xsec_source=pc_user\")",
+      "Bash(\"C:\\字幕工作流\\yt-dlp-gui-windows\\bin\\yt-dlp.exe\" --simulate --user-agent \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\" -f \"best[ext=mp4]/best\" \"https://www.xiaohongshu.com/explore/68346a0f000000002300ec58?xsec_token=ABMd01rILMxnY5Lr1SNZxmMObrJeApT3sosJym8_pDQRo=&xsec_source=pc_user\")",
+      "Bash(\"C:\\字幕工作流\\yt-dlp-gui-windows\\bin\\yt-dlp.exe\" --user-agent \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\" -f \"best[ext=mp4]/best\" -o \"C:\\字幕工作流\\yt-dlp-gui-windows\\test_download\\%(title)s.%(ext)s\" --max-filesize 50M \"https://www.xiaohongshu.com/explore/68346a0f000000002300ec58?xsec_token=ABMd01rILMxnY5Lr1SNZxmMObrJeApT3sosJym8_pDQRo=&xsec_source=pc_user\")",
+      "Bash(\"C:\\字幕工作流\\yt-dlp-gui-windows\\bin\\yt-dlp.exe\" --simulate --user-agent \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\" \"https://www.xiaohongshu.com/user/profile/664407b6000000000303254f\")",
+      "Bash(\"C:\\字幕工作流\\yt-dlp-gui-windows\\bin\\yt-dlp.exe\" --simulate --cookies-from-browser firefox --user-agent \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\" \"https://www.xiaohongshu.com/user/profile/664407b6000000000303254f\")",
+      "Bash(\"C:\\字幕工作流\\yt-dlp-gui-windows\\bin\\yt-dlp.exe\" --simulate --user-agent \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\" -f \"best[ext=mp4]/best\" \"https://www.xiaohongshu.com/user/profile/664407b6000000000303254f/68346a0f000000002300ec58?xsec_token=ABMd01rILMxnY5Lr1SNZxmMObrJeApT3sosJym8_pDQRo=&xsec_source=pc_user\")",
+      "Bash(\"C:\\字幕工作流\\yt-dlp-gui-windows\\bin\\yt-dlp.exe\" --simulate --user-agent \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\" -f \"best[ext=mp4]/best\" \"https://www.xiaohongshu.com/explore/68346a0f000000002300ec58?xsec_token=ABMd01rILMxnY5Lr1SNZxmMObrJeApT3sosJym8_pDQRo=&xsec_source=pc_user\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

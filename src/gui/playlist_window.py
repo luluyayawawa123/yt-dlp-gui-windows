@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                            QPushButton, QLineEdit, QLabel, QMessageBox, QTextEdit, QHBoxLayout, QFileDialog, QComboBox, QCheckBox, QDialog,
                            QStyle, QSizePolicy, QApplication)
 from PyQt6.QtCore import Qt, QProcess, QProcessEnvironment
-from PyQt6.QtGui import QTextCursor
+from PyQt6.QtGui import QTextCursor, QIcon
 from .saved_urls_dialog import SavedURLsDialog
 import os
 import logging
@@ -27,6 +27,9 @@ class PlaylistWindow(QMainWindow):
         self.setMinimumSize(700, 500)
         self.setMaximumWidth(800)  # 限制最大宽度
         self.resize(700, 500)
+        
+        # 设置窗口图标
+        self.set_window_icon()
         
         # 创建中心部件
         central_widget = QWidget()
@@ -644,5 +647,26 @@ class PlaylistWindow(QMainWindow):
 
     def _is_valid_youtube_url(self, url):
         """验证是否是有效的YouTube URL"""
-        url = url.lower()  # 转换为小写进行比较
-        return ('youtube.com' in url or 'youtu.be' in url) and url.startswith('http') 
+        url = url.lower()  # 转换为小写进行比較
+        return ('youtube.com' in url or 'youtu.be' in url) and url.startswith('http')
+    
+    def set_window_icon(self):
+        """设置窗口图标"""
+        try:
+            from pathlib import Path
+            icon_paths = [
+                Path(__file__).parent.parent.parent / "icons" / "app_icon.ico",
+                Path(__file__).parent.parent.parent / "icons" / "app_icon.png",
+                Path(__file__).parent.parent.parent / "icons" / "icon_256x256.png"
+            ]
+            
+            for icon_path in icon_paths:
+                if icon_path.exists():
+                    icon = QIcon(str(icon_path))
+                    self.setWindowIcon(icon)
+                    logging.debug(f"已设置播放列表窗口图标: {icon_path}")
+                    return
+                    
+            logging.warning("播放列表窗口未找到图标文件")
+        except Exception as e:
+            logging.error(f"设置播放列表窗口图标失败: {e}") 

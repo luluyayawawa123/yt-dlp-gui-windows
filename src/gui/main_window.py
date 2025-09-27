@@ -4,11 +4,12 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                             QProgressBar, QSizePolicy, QFrame, QMessageBox,
                             QScrollArea, QMenu, QGroupBox, QCheckBox)
 from PyQt6.QtCore import Qt, QProcess, QEvent
-from PyQt6.QtGui import QTextCursor, QFont
+from PyQt6.QtGui import QTextCursor, QFont, QIcon
 import os
 import datetime
 from core.downloader import Downloader
 from core.config import Config
+from gui.log_window import LogWindow
 import sys
 from PyQt6.QtWidgets import QApplication
 import re
@@ -81,12 +82,40 @@ class MainWindow(QMainWindow):
         self.total_urls = 0
         self.completed_urls = 0
         self.download_tasks = {}
+        self.log_windows = {}  # 存储每个任务的日志窗口
+        
+        # 设置窗口图标
+        self.set_window_icon()
         
         # 初始化 UI
         self.init_ui()
         
         # 检查完全磁盘访问权限
         self.check_full_disk_access()
+        
+    def set_window_icon(self):
+        """设置窗口图标"""
+        try:
+            # 获取图标文件路径
+            from pathlib import Path
+            icon_paths = [
+                Path(__file__).parent.parent.parent / "icons" / "app_icon.ico",
+                Path(__file__).parent.parent.parent / "icons" / "app_icon.png",
+                Path(__file__).parent.parent.parent / "icons" / "icon_256x256.png"
+            ]
+            
+            for icon_path in icon_paths:
+                if icon_path.exists():
+                    icon = QIcon(str(icon_path))
+                    self.setWindowIcon(icon)
+                    # 也设置应用程序图标
+                    QApplication.instance().setWindowIcon(icon)
+                    logging.debug(f"已设置窗口图标: {icon_path}")
+                    return
+            
+            logging.warning("未找到图标文件")
+        except Exception as e:
+            logging.error(f"设置窗口图标失败: {e}")
         
     def init_ui(self):
         """初始化用户界面"""
@@ -229,11 +258,11 @@ class MainWindow(QMainWindow):
                 border-bottom-right-radius: 3px;
             }}
             
-            QFrame#taskWidget {{
+            QWidget#taskWidget {{
                 background: {self.COLORS['surface']};
-                border: 1px solid {self.COLORS['border']};
-                border-radius: 8px;
-                margin: 4px;
+                border: none;
+                border-radius: 4px;
+                margin: 6px 8px 2px 8px;
             }}
             
             /* 添加滚动区域样式 */
@@ -241,6 +270,7 @@ class MainWindow(QMainWindow):
                 background-color: {self.COLORS['surface']};
                 border: 1px solid {self.COLORS['border']};
                 border-radius: 8px;
+                padding: 0px;
             }}
             
             /* 确保滚动区域内的视口也是透明的，不影响圆角 */
@@ -391,8 +421,8 @@ class MainWindow(QMainWindow):
         # 创建下载任务容器
         self.downloads_area = QWidget()
         self.tasks_layout = QVBoxLayout(self.downloads_area)
-        self.tasks_layout.setSpacing(0)
-        self.tasks_layout.setContentsMargins(0, 0, 0, 0)
+        self.tasks_layout.setSpacing(2)  # 增加任务间距
+        self.tasks_layout.setContentsMargins(4, 6, 4, 6)  # 增加容器内边距
         
         # 创建滚动区域
         scroll_area = QScrollArea()
@@ -531,12 +561,12 @@ class MainWindow(QMainWindow):
         task_widget.setObjectName("taskWidget")  # 添加ID以应用圆角样式
         task_widget.setFixedHeight(75)  # 从80改为75，进一步压缩任务的高度
         
-        # 为任务小部件设置圆角和边框样式
+        # 为任务小部件设置背景样式，无边框避免嵌套
         task_widget.setStyleSheet("""
             QWidget#taskWidget {
                 background-color: #F5F7FA;
-                border: 1px solid #E0E4E8;
-                border-radius: 8px;
+                border: none;
+                border-radius: 4px;
                 margin: 2px 0;
             }
         """)
@@ -611,6 +641,24 @@ class MainWindow(QMainWindow):
         
         status_layout.addStretch()
         
+        # 实时日志按钮
+        log_button = QPushButton("实时下载日志")
+        log_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        log_button.setStyleSheet("""
+            QPushButton {
+                border: none;
+                color: #666666;
+                font-size: 10px;
+                padding: 2px 6px;
+                background: transparent;
+            }
+            QPushButton:hover {
+                color: #333333;
+                text-decoration: underline;
+            }
+        """)
+        status_layout.addWidget(log_button)
+        
         # 打开文件夹按钮（初始隐藏）
         open_button = QPushButton("📂 打开文件夹")
         open_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -662,8 +710,12 @@ class MainWindow(QMainWindow):
         task_widget.progress_label = progress_label
         task_widget.status_label = status_label
         task_widget.open_button = open_button
+        task_widget.log_button = log_button
         task_widget.video_path = None  # 用于保存视频路径
         task_widget.progress_bar = progress_bar
+        
+        # 连接日志按钮信号
+        log_button.clicked.connect(lambda: self.show_task_log(task_id))
         
         # 将新任务添加到顶部
         self.tasks_layout.insertWidget(0, task_widget)
@@ -827,6 +879,18 @@ class MainWindow(QMainWindow):
         
     def update_output(self, task_id, message):
         """更新下载进度显示"""
+        # 处理原生日志和普通消息
+        if message.startswith("[RAW_LOG]"):
+            # 这是原生日志信息，只发送到日志窗口，不更新UI进度
+            raw_log = message[9:]  # 移除前缀
+            if task_id in self.log_windows:
+                self.log_windows[task_id].append_raw_log(raw_log)
+            return  # 不继续处理原生日志（原生日志不包含UI更新信息）
+            
+        # 同时将普通消息发送到日志窗口
+        if task_id in self.log_windows:
+            self.log_windows[task_id].append_log(message)
+            
         if task_id in self.download_tasks:
             task_widget = self.download_tasks[task_id]
             
@@ -1119,10 +1183,41 @@ class MainWindow(QMainWindow):
         self.completed_urls = 0
         self.total_urls = 0
         
-        return True 
+        return True
+        
+    def show_task_log(self, task_id):
+        """显示任务的实时日志窗口"""
+        # 如果日志窗口已存在，就显示它
+        if task_id in self.log_windows:
+            log_window = self.log_windows[task_id]
+            if log_window.isVisible():
+                log_window.raise_()  # 将窗口置前
+                log_window.activateWindow()  # 激活窗口
+            else:
+                log_window.show()
+            return
+            
+        # 创建新的日志窗口
+        log_window = LogWindow(task_id, self)
+        self.log_windows[task_id] = log_window
+        
+        # 连接窗口关闭信号，清理引用
+        log_window.finished.connect(lambda: self._cleanup_log_window(task_id))
+        
+        log_window.show()
+        
+    def _cleanup_log_window(self, task_id):
+        """清理日志窗口引用"""
+        if task_id in self.log_windows:
+            del self.log_windows[task_id]
 
     def closeEvent(self, event):
         """处理窗口关闭事件"""
+        # 关闭所有日志窗口
+        for log_window in self.log_windows.values():
+            log_window.close()
+        self.log_windows.clear()
+        
         # 取消所有正在进行的下载
         self.downloader.cancel_download()
         # 等待下载器清理完成
