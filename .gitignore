@@ -91,3 +91,6 @@ bin/*
 !bin/*.exe
 !bin/*.dll
 !bin/*.bat
+
+# Specifically ignore large deno binary (overrides above exceptions)
+bin/deno.exe

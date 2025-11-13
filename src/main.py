@@ -35,7 +35,7 @@ def main():
 
     # 设置应用程序信息
     app.setApplicationName("YT-DLP GUI for Windows")
-    app.setApplicationVersion("1.0.6")
+    app.setApplicationVersion("1.0.7")
 
     # 设置应用程序图标
     icon_paths = [
