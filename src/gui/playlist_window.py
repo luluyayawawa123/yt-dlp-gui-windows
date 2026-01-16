@@ -307,7 +307,8 @@ class PlaylistWindow(QMainWindow):
             
             # 构建命令
             program = os.path.normpath(os.path.join(root_dir, "bin", "yt-dlp.exe"))
-            output_template = os.path.normpath(os.path.join(output_path, "%(title)s.%(ext)s"))
+            # 为避免播放列表中同名视频互相覆盖，追加唯一视频ID
+            output_template = os.path.normpath(os.path.join(output_path, "%(title)s [%(id)s].%(ext)s"))
             
             # 根据画质选择设置下载参数
             quality_index = self.quality_combo.currentIndex()
