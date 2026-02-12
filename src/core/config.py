@@ -79,6 +79,7 @@ class Config:
             self.config = {
                 'last_download_path': str(Path.home() / "Downloads"),
                 'browser': 'firefox',
+                'quality_index': 0,
                 'format_settings': {
                     'mode': 'best',
                     'custom_format': ''

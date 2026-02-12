@@ -385,7 +385,10 @@ class MainWindow(QMainWindow):
             "480P MP4",
             "仅MP3音频"
         ])
-        self.quality_combo.setCurrentIndex(0)  # 默认选择最佳画质
+        saved_quality = self.config.config.get('quality_index', 0)
+        if 0 <= saved_quality <= 5:
+            self.quality_combo.setCurrentIndex(saved_quality)
+        self.quality_combo.currentIndexChanged.connect(self._save_quality_setting)
 
         # 添加字幕下载选项
         self.subtitle_checkbox = QCheckBox("下载字幕")
@@ -459,6 +462,11 @@ class MainWindow(QMainWindow):
             }
         """)
         
+    def _save_quality_setting(self, index):
+        """保存画质选择到配置"""
+        self.config.config['quality_index'] = index
+        self.config.save_config()
+
     def update_history_display(self):
         """更新下载历史显示"""
         # 清理旧的历史显示

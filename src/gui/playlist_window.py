@@ -102,7 +102,10 @@ class PlaylistWindow(QMainWindow):
             "480P MP4",
             "仅MP3音频"
         ])
-        self.quality_combo.setCurrentIndex(0)  # 默认选择最佳画质
+        saved_quality = self.config.config.get('quality_index', 0)
+        if 0 <= saved_quality <= 5:
+            self.quality_combo.setCurrentIndex(saved_quality)
+        self.quality_combo.currentIndexChanged.connect(self._save_quality_setting)
         quality_layout.addWidget(quality_label)
         quality_layout.addWidget(self.quality_combo)
 
@@ -241,6 +244,11 @@ class PlaylistWindow(QMainWindow):
             }
         """)
         
+    def _save_quality_setting(self, index):
+        """保存画质选择到配置"""
+        self.config.config['quality_index'] = index
+        self.config.save_config()
+
     def browse_location(self):
         """浏览并选择下载位置"""
         current_path = self.location_input.text()
@@ -299,6 +307,8 @@ class PlaylistWindow(QMainWindow):
                 if '=' in env_str:
                     key, value = env_str.split('=', 1)
                     process_env.insert(key, value)
+            bin_dir = os.path.normpath(os.path.join(root_dir, "bin"))
+            process_env.insert("PATH", bin_dir + os.pathsep + process_env.value("PATH", ""))
             self.process.setProcessEnvironment(process_env)
             
             self.process.readyReadStandardOutput.connect(self.handle_output)
@@ -308,7 +318,11 @@ class PlaylistWindow(QMainWindow):
             # 构建命令
             program = os.path.normpath(os.path.join(root_dir, "bin", "yt-dlp.exe"))
             # 为避免播放列表中同名视频互相覆盖，追加唯一视频ID
-            output_template = os.path.normpath(os.path.join(output_path, "%(title)s [%(id)s].%(ext)s"))
+            output_template = os.path.normpath(os.path.join(
+                output_path,
+                "%(playlist_title,channel,uploader,playlist_id,channel_id|未知频道)s",
+                "%(title)s [%(id)s].%(ext)s"
+            ))
             
             # 根据画质选择设置下载参数
             quality_index = self.quality_combo.currentIndex()
@@ -324,6 +338,8 @@ class PlaylistWindow(QMainWindow):
                 "--no-restrict-filenames",  # 允许文件名包含特殊字符
                 "--encoding", "utf-8",      # 强制使用 UTF-8 编码
                 "-f", format_option,        # 使用选择的画质/格式
+                "--ffmpeg-location", os.path.normpath(os.path.join(root_dir, "bin", "ffmpeg.exe")),
+                "--no-overwrites",
             ]
             
             # 如果勾选了字幕下载，添加字幕相关参数
