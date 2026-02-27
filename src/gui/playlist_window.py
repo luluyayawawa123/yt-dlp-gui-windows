@@ -16,6 +16,7 @@ class PlaylistWindow(QMainWindow):
         self.config = config
         self.parent_window = parent
         self.process = None
+        self._reset_download_tracking()
         self.setup_ui()
         
     def setup_ui(self):
@@ -123,6 +124,17 @@ class PlaylistWindow(QMainWindow):
         self.archive_checkbox = QCheckBox("跳过曾经下载过的视频")
         self.archive_checkbox.setChecked(True)  # 默认勾选
         archive_layout.addWidget(self.archive_checkbox)
+
+        # 网络稳健重试（播放列表模式专用）
+        self.resilient_retry_checkbox = QCheckBox("网络稳健重试（推荐）")
+        self.resilient_retry_checkbox.setChecked(
+            self.config.config.get('playlist_resilient_retry', True)
+        )
+        self.resilient_retry_checkbox.setToolTip(
+            "遇到网络抖动会自动退避重试，成功率更高，但失败时等待会稍长"
+        )
+        self.resilient_retry_checkbox.stateChanged.connect(self._save_resilient_retry_setting)
+        archive_layout.addWidget(self.resilient_retry_checkbox)
         archive_layout.addStretch()
         layout.addLayout(archive_layout)
         
@@ -249,6 +261,11 @@ class PlaylistWindow(QMainWindow):
         self.config.config['quality_index'] = index
         self.config.save_config()
 
+    def _save_resilient_retry_setting(self, state):
+        """保存播放列表模式的稳健重试开关"""
+        self.config.config['playlist_resilient_retry'] = (state == Qt.CheckState.Checked.value)
+        self.config.save_config()
+
     def browse_location(self):
         """浏览并选择下载位置"""
         current_path = self.location_input.text()
@@ -266,6 +283,306 @@ class PlaylistWindow(QMainWindow):
             # 保存到配置
             self.config.config['download_path'] = folder
             self.config.save_config()
+
+    def _reset_download_tracking(self):
+        """重置当前下载任务的状态追踪"""
+        self.item_states = {}
+        self.current_item_id = None
+        self.current_merging_id = None
+        self.total_items_expected = 0
+        self.stdout_buffer = ""
+        self.stderr_buffer = ""
+
+    def _ensure_item_state(self, video_id, title=None):
+        """确保视频条目状态存在并返回状态字典"""
+        if not video_id:
+            return None
+
+        state = self.item_states.get(video_id)
+        if not state:
+            state = {
+                "id": video_id,
+                "title": video_id,
+                "status": "unknown",
+                "stage": "",
+                "reason_code": "",
+                "reason_text": "",
+                "pending_retry_exhausted": False,
+                "seen_merger": False,
+                "final_merged": False,
+                "order": len(self.item_states) + 1
+            }
+            self.item_states[video_id] = state
+
+        if title and (not state["title"] or state["title"] == video_id):
+            state["title"] = title
+        return state
+
+    def _extract_video_id(self, text):
+        """从日志文本中提取视频ID"""
+        if not text:
+            return None
+
+        # YouTube ID 通常为 11 位，这里放宽为 10-20 位以兼容少量变体并避免误匹配 [download] 等标签
+        bracket_match = re.search(r'\[([A-Za-z0-9_-]{10,20})\](?:\.[A-Za-z0-9_-]+)?', text)
+        if bracket_match:
+            return bracket_match.group(1)
+
+        watch_match = re.search(r'[?&]v=([A-Za-z0-9_-]{10,20})', text)
+        if watch_match:
+            return watch_match.group(1)
+
+        return None
+
+    def _extract_display_title(self, path_text):
+        """从文件路径中提取可读标题"""
+        if not path_text:
+            return None
+        filename = os.path.basename(path_text.strip())
+        if not filename:
+            return None
+        title = os.path.splitext(filename)[0]
+        # 去掉中间格式后缀，例如 .f401 / .f140-1
+        title = re.sub(r'\.f\d+(?:-\d+)?$', '', title)
+        return title.strip() or None
+
+    def _mark_item_failed(self, video_id, reason_code, reason_text, stage):
+        """标记条目失败"""
+        state = self._ensure_item_state(video_id)
+        if not state or state["final_merged"]:
+            return
+
+        state["status"] = "failed"
+        state["reason_code"] = reason_code
+        state["reason_text"] = (reason_text or "").strip()[:300]
+        state["stage"] = stage
+        state["pending_retry_exhausted"] = False
+
+    def _mark_item_completed(self, video_id, merged=False):
+        """标记条目成功完成"""
+        state = self._ensure_item_state(video_id)
+        if not state:
+            return
+
+        state["status"] = "ok"
+        state["pending_retry_exhausted"] = False
+        state["reason_code"] = ""
+        state["reason_text"] = ""
+        if merged:
+            state["seen_merger"] = True
+            state["final_merged"] = True
+            state["stage"] = "merge"
+
+    def _mark_retry_exhausted_pending(self, video_id, reason_text):
+        """标记达到重试上限，等待后续判断是否真正失败"""
+        state = self._ensure_item_state(video_id)
+        if not state or state["final_merged"]:
+            return
+
+        state["pending_retry_exhausted"] = True
+        state["reason_code"] = "retries_exhausted"
+        state["reason_text"] = (reason_text or "").strip()[:300]
+        if not state["stage"]:
+            state["stage"] = "download"
+
+    def _finalize_pending_for_item(self, video_id, switched_to_next=False):
+        """在切换条目或任务结束时，确认是否应将重试上限条目标记为失败"""
+        if not video_id:
+            return
+
+        state = self.item_states.get(video_id)
+        if not state:
+            return
+
+        if state["pending_retry_exhausted"] and state["status"] != "ok":
+            reason = state["reason_text"] or "网络读取不完整，重试已达到上限（10/10）"
+            if switched_to_next:
+                reason = f"{reason}，并已切换到下一个条目"
+            self._mark_item_failed(video_id, "retries_exhausted", reason, "download")
+        state["pending_retry_exhausted"] = False
+
+    def _parse_stream_text(self, text, is_error=False):
+        """解析 stdout/stderr 流并进行条目状态追踪"""
+        buffer_name = "stderr_buffer" if is_error else "stdout_buffer"
+        combined = getattr(self, buffer_name) + text
+        normalized = combined.replace('\r\n', '\n').replace('\r', '\n')
+        parts = normalized.split('\n')
+
+        if normalized.endswith('\n'):
+            lines = parts[:-1]
+            remainder = ""
+        else:
+            lines = parts[:-1]
+            remainder = parts[-1] if parts else ""
+
+        setattr(self, buffer_name, remainder)
+
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line:
+                continue
+            self._track_line(line, is_error=is_error)
+
+    def _flush_stream_buffers(self):
+        """处理残留在缓冲区中的最后一行文本"""
+        if self.stdout_buffer.strip():
+            self._track_line(self.stdout_buffer.strip(), is_error=False)
+        if self.stderr_buffer.strip():
+            self._track_line(self.stderr_buffer.strip(), is_error=True)
+        self.stdout_buffer = ""
+        self.stderr_buffer = ""
+
+    def _track_line(self, line, is_error=False):
+        """按行跟踪下载/合并状态"""
+        # 某些失败会发生在 Destination 之前，先尽量从 URL/INFO 行绑定当前条目ID
+        extracting_match = re.search(
+            r'\[youtube\]\s+Extracting URL:\s+https?://[^\s]+[?&]v=([A-Za-z0-9_-]{10,20})',
+            line
+        )
+        if extracting_match:
+            video_id = extracting_match.group(1)
+            self.current_item_id = video_id
+            state = self._ensure_item_state(video_id)
+            if state and not state["stage"]:
+                state["stage"] = "download"
+
+        info_match = re.search(r'^\[info\]\s+([A-Za-z0-9_-]{10,20}):', line)
+        if info_match:
+            video_id = info_match.group(1)
+            self.current_item_id = video_id
+            state = self._ensure_item_state(video_id)
+            if state and not state["stage"]:
+                state["stage"] = "download"
+
+        youtube_step_match = re.search(r'^\[youtube\]\s+([A-Za-z0-9_-]{10,20}):', line)
+        if youtube_step_match:
+            video_id = youtube_step_match.group(1)
+            self.current_item_id = video_id
+            state = self._ensure_item_state(video_id)
+            if state and not state["stage"]:
+                state["stage"] = "download"
+
+        item_match = re.search(r'\[download\] Downloading item (\d+) of (\d+)', line)
+        if item_match:
+            _, total = item_match.groups()
+            try:
+                self.total_items_expected = max(self.total_items_expected, int(total))
+            except ValueError:
+                pass
+            self._finalize_pending_for_item(self.current_item_id, switched_to_next=True)
+            self.current_item_id = None
+            self.current_merging_id = None
+            return
+
+        if '[download] Destination: ' in line:
+            path_text = line.split('[download] Destination: ', 1)[-1].strip()
+            video_id = self._extract_video_id(path_text)
+            title = self._extract_display_title(path_text)
+            if video_id:
+                self.current_item_id = video_id
+                state = self._ensure_item_state(video_id, title)
+                if state:
+                    state["stage"] = "download"
+            return
+
+        if '[Merger] Merging formats into ' in line:
+            merged_path = line.split('[Merger] Merging formats into ', 1)[-1].strip().strip('"')
+            video_id = self._extract_video_id(merged_path) or self.current_item_id
+            if video_id:
+                self.current_merging_id = video_id
+                state = self._ensure_item_state(video_id, self._extract_display_title(merged_path))
+                if state:
+                    state["seen_merger"] = True
+                    state["stage"] = "merge"
+            return
+
+        if line.startswith('Deleting original file '):
+            video_id = self._extract_video_id(line)
+            if video_id:
+                self._mark_item_completed(video_id, merged=True)
+                if self.current_merging_id == video_id:
+                    self.current_merging_id = None
+            return
+
+        if 'has already been downloaded and merged' in line:
+            video_id = self._extract_video_id(line) or self.current_item_id
+            if video_id:
+                self._mark_item_completed(video_id, merged=True)
+            return
+
+        if 'Retrying (10/10)' in line:
+            video_id = self.current_item_id
+            if video_id:
+                self._mark_retry_exhausted_pending(video_id, line)
+            return
+
+        if 'Giving up after 10 retries' in line:
+            video_id = self.current_item_id
+            if video_id:
+                self._mark_item_failed(video_id, "retries_exhausted", line, "download")
+            return
+
+        lower = line.lower()
+        if is_error or 'error:' in lower:
+            target_id = self.current_merging_id or self.current_item_id
+            if not target_id:
+                return
+
+            if any(key in lower for key in ['ffmpeg', 'merger', 'postprocess', 'conversion failed']):
+                self._mark_item_failed(target_id, "merge_failed", line, "merge")
+            elif any(key in lower for key in ['unable to download', 'video unavailable']):
+                self._mark_item_failed(target_id, "download_failed", line, "download")
+            elif 'error:' in lower:
+                self._mark_item_failed(target_id, "download_failed", line, "download")
+
+    def _format_failure_reason(self, state):
+        """将失败状态格式化为用户可读原因"""
+        code = state.get("reason_code")
+        raw_text = state.get("reason_text", "")
+        if code == "retries_exhausted":
+            return "下载失败：网络读取不完整，重试达到上限（10/10）"
+        if code == "merge_failed":
+            return f"合并失败：{raw_text or 'ffmpeg 后处理阶段报错'}"
+        if code == "download_failed":
+            return f"下载失败：{raw_text or '下载阶段出现错误'}"
+        return f"失败：{raw_text or '未知错误'}"
+
+    def _append_download_summary(self):
+        """在任务结束后追加失败摘要"""
+        sorted_states = sorted(self.item_states.values(), key=lambda x: x["order"])
+        failed_items = [state for state in sorted_states if state.get("status") == "failed"]
+        ok_items = [state for state in sorted_states if state.get("status") == "ok"]
+
+        observed_total = len(self.item_states)
+        total_count = self.total_items_expected if self.total_items_expected > 0 else observed_total
+        failed_count = len(failed_items)
+        success_count = len(ok_items)
+        unknown_count = max(total_count - success_count - failed_count, 0)
+
+        summary_lines = [
+            "",
+            "========== 下载结果摘要 ==========",
+            f"总条目: {total_count}，成功: {success_count}，失败: {failed_count}"
+        ]
+        if unknown_count > 0:
+            summary_lines.append(f"未判定: {unknown_count}（日志可能被截断或缺少关键行）")
+
+        if failed_items:
+            summary_lines.append("失败条目：")
+            for state in failed_items:
+                title = state.get("title") or state["id"]
+                reason = self._format_failure_reason(state)
+                summary_lines.append(f"- [{state['id']}] {title}：{reason}")
+            summary_lines.append(
+                "建议：对同一播放列表再次执行下载，并勾选“跳过曾经下载过的视频”。"
+                "程序会跳过已完成条目，优先补齐本次失败条目。"
+            )
+        else:
+            summary_lines.append("本次下载未发现失败条目。")
+
+        summary_lines.append("==================================")
+        self.output_text.append("\n".join(summary_lines))
+        self.output_text.moveCursor(QTextCursor.MoveOperation.End)
     
     def start_download(self):
         """开始下载播放列表"""
@@ -279,6 +596,8 @@ class PlaylistWindow(QMainWindow):
             return
             
         try:
+            self._reset_download_tracking()
+
             # 获取下载路径并规范化
             output_path = os.path.normpath(self.location_input.text())
             if not output_path:
@@ -360,6 +679,16 @@ class PlaylistWindow(QMainWindow):
                 "--verbose",
                 "-o", output_template
             ])
+
+            # 稳健重试参数：平衡成功率与等待体验
+            if self.resilient_retry_checkbox.isChecked():
+                args.extend([
+                    "--retries", "10",
+                    "--fragment-retries", "10",
+                    "--retry-sleep", "http:exp=1:8",
+                    "--retry-sleep", "fragment:exp=1:8",
+                    "--socket-timeout", "15"
+                ])
             
             # 如果选择了 MP3 格式，添加音频提取和转换参数
             if quality_index == 5:  # MP3 选项
@@ -401,6 +730,7 @@ class PlaylistWindow(QMainWindow):
             
             # 记录调试信息
             logging.debug(f"Raw output: {text}")
+            self._parse_stream_text(text, is_error=False)
             
             # 处理输出文本
             self.output_text.append(text)
@@ -456,6 +786,7 @@ class PlaylistWindow(QMainWindow):
             data = self.process.readAllStandardError().data().decode('utf-8', errors='ignore')
             # 错误信息记录到日志
             logging.error(f"下载错误: {data}")
+            self._parse_stream_text(data, is_error=True)
             
             # 对用户显示更友好的错误信息
             if "Unable to download" in data:
@@ -472,6 +803,9 @@ class PlaylistWindow(QMainWindow):
     def download_finished(self, exit_code, exit_status):
         """下载完成处理"""
         logging.info(f"下载进程结束 - 退出码: {exit_code}, 状态: {exit_status}")
+        self._flush_stream_buffers()
+        self._finalize_pending_for_item(self.current_item_id, switched_to_next=False)
+        self._append_download_summary()
         self.download_button.setEnabled(True)
         if exit_code == 0:
             self.status_label.setText("下载完成")
