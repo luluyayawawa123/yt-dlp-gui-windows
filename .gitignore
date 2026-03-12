@@ -94,5 +94,9 @@ bin/*
 !bin/bgutil-ytdlp-pot-provider/
 !bin/yt-dlp-plugins/
 
-# Specifically ignore large deno binary (overrides above exceptions)
+# node_modules 包含 Deno junction（绝对路径），不适合提交 Git
+# 打包时会通过 deno install 重新生成
+bin/bgutil-ytdlp-pot-provider/server/node_modules/
+
+# deno.exe 超过 GitHub 100MB 限制，通过 Release 附件分发
 bin/deno.exe
