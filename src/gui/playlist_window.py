@@ -673,6 +673,14 @@ class PlaylistWindow(QMainWindow):
             if self.archive_checkbox.isChecked():
                 args.extend(["--download-archive", archive_file])
             
+            # 添加 PO Token 参数（YouTube SABR 协议需要）
+            pot_server_home = os.path.normpath(os.path.join(root_dir, "bin", "bgutil-ytdlp-pot-provider", "server"))
+            if os.path.exists(pot_server_home):
+                args.extend([
+                    "--extractor-args",
+                    f"youtubepot-bgutilscript:server_home={pot_server_home}"
+                ])
+
             # 添加其他参数
             args.extend([
                 "--cookies-from-browser", "firefox",
@@ -758,22 +766,17 @@ class PlaylistWindow(QMainWindow):
                 # 处理单个视频的下载进度
                 elif '%' in text and 'of' in text:
                     try:
-                        parts = text.split()
-                        percent = parts[1]  # 30.3%
-                        size = parts[3]     # 95.44MiB
-                        
-                        # 提取速度信息
-                        speed = "0 B/s"  # 默认值
-                        for i, part in enumerate(parts):
-                            if part == "at" and i + 1 < len(parts):
-                                next_part = parts[i + 1]
-                                if next_part.endswith(('B/s', 'iB/s')):  # 确保是速度而不是时间
-                                    speed = next_part
-                                    break
-                        
-                        # 更新状态显示
-                        progress_text = f"单个视频下载进度: {percent}  大小: {size}  速度: {speed}"
-                        self.status_label.setText(progress_text)
+                        # 兼容普通格式和 SABR 格式（带流编号前缀如 "2:"）
+                        progress_match = re.search(
+                            r'\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+\S+)\s+at\s+([\d.]+\S+)\s+ETA\s+(\S+)',
+                            text
+                        )
+                        if progress_match:
+                            percent = progress_match.group(1) + '%'
+                            size = progress_match.group(2)
+                            speed = progress_match.group(3)
+                            progress_text = f"单个视频下载进度: {percent}  大小: {size}  速度: {speed}"
+                            self.status_label.setText(progress_text)
                     except (IndexError, ValueError) as e:
                         logging.error(f"解析进度信息出错: {str(e)}")
                     

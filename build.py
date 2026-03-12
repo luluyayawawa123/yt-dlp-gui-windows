@@ -125,14 +125,38 @@ def build() -> None:
     dist_dir = root_dir / "dist" / app_name
     bin_dir = dist_dir / "bin"
 
-    if bin_dir.exists():
-        shutil.rmtree(bin_dir)
-    bin_dir.mkdir(exist_ok=True)
-
     src_bin = root_dir / "bin"
     if src_bin.exists():
-        for file in src_bin.glob("*"):
-            shutil.copy2(file, bin_dir)
+        import subprocess
+        # 使用 robocopy 复制 bin 目录，排除 node_modules 和 .git
+        # node_modules 包含 Deno 的 junction（绝对路径），复制后会失效
+        # 后续会在目标目录重新 deno install 生成正确的 junction
+        result = subprocess.run(
+            ['robocopy', str(src_bin), str(bin_dir), '/E',
+             '/XD', '.git', 'node_modules',
+             '/NFL', '/NDL', '/NJH', '/NJS', '/NC', '/NS', '/NP'],
+            capture_output=True, text=True
+        )
+        if result.returncode >= 8:
+            print(f"复制 bin 目录失败: {result.stderr}")
+            raise RuntimeError(f"robocopy 失败，返回码: {result.returncode}")
+        print(f"已复制 bin 目录到 {bin_dir}")
+
+        # 在目标目录重新安装 Deno 依赖，生成正确的 junction
+        server_dir = bin_dir / "bgutil-ytdlp-pot-provider" / "server"
+        deno_exe = bin_dir / "deno.exe"
+        if server_dir.exists() and deno_exe.exists():
+            print("正在安装 PO Token 脚本依赖...")
+            install_result = subprocess.run(
+                [str(deno_exe), 'install', '--allow-scripts=npm:canvas', '--frozen'],
+                cwd=str(server_dir),
+                capture_output=True, text=True,
+                encoding='utf-8', errors='ignore'
+            )
+            if install_result.returncode != 0:
+                print(f"警告: deno install 失败: {install_result.stderr}")
+            else:
+                print("PO Token 脚本依赖安装完成")
 
     config_dir = dist_dir / "config"
     config_dir.mkdir(exist_ok=True)

@@ -91,6 +91,8 @@ bin/*
 !bin/*.exe
 !bin/*.dll
 !bin/*.bat
+!bin/bgutil-ytdlp-pot-provider/
+!bin/yt-dlp-plugins/
 
 # Specifically ignore large deno binary (overrides above exceptions)
 bin/deno.exe
