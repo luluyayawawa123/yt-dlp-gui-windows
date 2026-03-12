@@ -41,13 +41,19 @@ class Downloader(QObject):
         self.env = QProcessEnvironment.systemEnvironment()
         self.env.insert("PATH", str(self.bin_dir) + os.pathsep + os.environ.get("PATH", ""))
         
+        # bgutil PO Token 脚本路径（SABR 协议需要 PO Token 才能获取具体分辨率）
+        self.pot_server_home = self.bin_dir / "bgutil-ytdlp-pot-provider" / "server"
+        
         # 定义支持的视频平台配置
         self.platform_configs = {
             'youtube': {
                 'domains': ['youtube.com', 'youtu.be', 'm.youtube.com'],
                 'require_cookies': True,
                 'default_browser': 'firefox',
-                'special_args': [],
+                'special_args': [
+                    '--extractor-args',
+                    f'youtubepot-bgutilscript:server_home={self.pot_server_home}'
+                ],
                 'default_format': None  # 使用用户选择的格式
             },
             'xiaohongshu': {
@@ -605,22 +611,32 @@ class Downloader(QObject):
                         else:
                             self.config.log(f"标题被过滤（长度不足或为空）: '{title}'", logging.DEBUG)
                 # 处理进度
-                elif '%' in text and 'of' in text and 'at' in text:
+                elif '%' in text and 'of' in text:
                     try:
-                        # 示例: [download]  23.4% of 50.75MiB at 2.52MiB/s ETA 00:15
-                        parts = text.split()
-                        percent = parts[1]  # 23.4%
-                        
-                        # 如果是100%，只显示"下载完成"
-                        if percent.startswith('100'):
-                            self.output_received.emit(task_id, "下载完成")
+                        import re
+                        # 兼容普通格式和 SABR 格式（带流编号前缀如 "2:"）
+                        # 示例1: [download]  23.4% of 50.75MiB at 2.52MiB/s ETA 00:15
+                        # 示例2: 2: [download]  18.8% of 210.43MiB at 902.64KiB/s ETA 03:12 (frag 20/119)
+                        # 示例3: [download]   1.4% of ~   4.36MiB at   13.74KiB/s ETA 00:23 (frag 0/144)
+                        match = re.search(
+                            r'\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+\S+)\s+at\s+([\d.]+\S+)\s+ETA\s+(\S+)',
+                            text
+                        )
+                        if match:
+                            percent = match.group(1)
+                            size = match.group(2)
+                            speed = match.group(3)
+                            eta = match.group(4)
+                            
+                            if float(percent) >= 100:
+                                self.output_received.emit(task_id, "下载完成")
+                            else:
+                                progress_text = f"下载进度: {percent}% (大小: {size}, 速度: {speed}, 剩余: {eta})"
+                                self.output_received.emit(task_id, progress_text)
                         else:
-                            # 下载中显示进度信息
-                            size = parts[3]     # 50.75MiB
-                            speed = parts[5]    # 2.52MiB/s
-                            eta = parts[7]      # 00:15
-                            progress_text = f"下载进度: {percent} (大小: {size}, 速度: {speed}, 剩余: {eta})"
-                            self.output_received.emit(task_id, progress_text)
+                            # 100% 完成行可能格式不同
+                            if '100%' in text or '100.0%' in text:
+                                self.output_received.emit(task_id, "下载完成")
                     except Exception:
                         # 如果解析失败，显示原始进度信息
                         self.output_received.emit(task_id, text.strip())
