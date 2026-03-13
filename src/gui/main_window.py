@@ -3,19 +3,24 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                             QTextEdit, QFileDialog, QLabel, QComboBox,
                             QProgressBar, QSizePolicy, QFrame, QMessageBox,
                             QScrollArea, QMenu, QGroupBox, QCheckBox)
-from PyQt6.QtCore import Qt, QProcess, QEvent
+from PyQt6.QtCore import Qt, QProcess, QEvent, pyqtSignal
 from PyQt6.QtGui import QTextCursor, QFont, QIcon
 import os
 import datetime
 from core.downloader import Downloader
 from core.config import Config
+from core.youtube_pot import prewarm_youtube_pot
 from gui.log_window import LogWindow
 import sys
 from PyQt6.QtWidgets import QApplication
 import re
 import logging
+import threading
+from pathlib import Path
 
 class MainWindow(QMainWindow):
+    youtube_prewarm_finished = pyqtSignal(bool, str)
+
     # 定义一个更有兼容性的字体方案，优先使用现代系统字体
     SYSTEM_FONT = QFont("Microsoft YaHei UI, PingFang SC, Segoe UI, -apple-system, sans-serif", 10)
     MONOSPACE_FONT = QFont("Consolas, Menlo, Courier, monospace", 10)
@@ -83,6 +88,9 @@ class MainWindow(QMainWindow):
         self.completed_urls = 0
         self.download_tasks = {}
         self.log_windows = {}  # 存储每个任务的日志窗口
+        self._pending_download_request = None
+        self._prewarm_in_progress = False
+        self.youtube_prewarm_finished.connect(self._handle_youtube_prewarm_finished)
         
         # 设置窗口图标
         self.set_window_icon()
@@ -295,6 +303,26 @@ class MainWindow(QMainWindow):
                 height: 0px;
             }}
         """)
+
+        self.header_status_label = QLabel(self.main_container)
+        self.header_status_label.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
+        )
+        self.header_status_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.header_status_label.setStyleSheet(
+            f"""
+            QLabel {{
+                color: {self.COLORS['info']};
+                font-size: 9pt;
+                font-weight: 500;
+                padding: 0 2px;
+                background: transparent;
+            }}
+            """
+        )
+        self.header_status_label.hide()
 
         # URL输入区域
         url_label = QLabel("视频链接:")
@@ -829,40 +857,32 @@ class MainWindow(QMainWindow):
         # 保存当前路径到配置（确保每次下载都更新配置）
         self.config.config['download_path'] = output_path
         self.config.save_config()
-        
-        # 开始下载
-        success = True
-        for url in urls:
-            url = url.strip()
-            if url:
-                try:
-                    # 创建下载进度显示
-                    task_id = f"Task-{len(self.download_tasks)+1}"
-                    task_widget = self.create_download_task_widget(url, task_id)
-                    
-                    if not self.downloader.start_download(url, output_path, format_options, browser):
-                        success = False
-                        break
-                except Exception as e:
-                    success = False
-                    error_msg = str(e)
-                    QMessageBox.critical(self, "下载失败", 
-                        f"启动下载失败：\n\n{error_msg}\n\n"
-                        "可能的解决方法：\n"
-                        "1. 确保选择的浏览器已正确安装\n"
-                        "2. 确保已在浏览器中登录 YouTube\n"
-                        "3. 尝试使用其他浏览器\n"
-                        "4. 检查网络连接"
-                    )
-                    self._enable_controls()
-                    return False
-        
-        if not success:
-            self._enable_controls()
+
+        self._pending_download_request = {
+            'urls': urls,
+            'output_path': output_path,
+            'format_options': format_options,
+            'browser': browser,
+        }
+
+        if self._requires_youtube_prewarm(urls):
+            self._start_youtube_prewarm()
+            return
+
+        self._launch_pending_downloads()
         
     def cancel_download(self):
         """取消下载"""
         try:
+            if self._prewarm_in_progress:
+                self._prewarm_in_progress = False
+                self._pending_download_request = None
+                self.completed_urls = 0
+                self.total_urls = 0
+                self._set_header_status("")
+                self._enable_controls()
+                return
+
             # 取消所有正在进行的下载
             self.downloader.cancel_download()
             
@@ -1016,6 +1036,7 @@ class MainWindow(QMainWindow):
         if self.completed_urls >= self.total_urls:
             # 重置界面
             self._enable_controls()
+            self._set_header_status("")
             self.url_input.clear()
             # 重置下载计数
             self.completed_urls = 0
@@ -1046,6 +1067,140 @@ class MainWindow(QMainWindow):
         self.download_button.setText("取消下载")
         self.download_button.clicked.disconnect()
         self.download_button.clicked.connect(self.cancel_download)
+
+    def _set_header_status(self, text, is_error=False):
+        """更新顶部状态提示。"""
+        color = self.COLORS['error'] if is_error else self.COLORS['info']
+        self.header_status_label.setStyleSheet(
+            f"""
+            QLabel {{
+                color: {color};
+                font-size: 9pt;
+                font-weight: 500;
+                padding: 0 2px;
+                background: transparent;
+            }}
+            """
+        )
+        self.header_status_label.setText(text)
+        if text:
+            self.header_status_label.adjustSize()
+            self._position_header_status_label()
+            self.header_status_label.show()
+            self.header_status_label.raise_()
+        else:
+            self.header_status_label.hide()
+
+    def _position_header_status_label(self):
+        """将顶部状态提示定位到窗口右上角，不占用布局空间。"""
+        if not hasattr(self, "header_status_label"):
+            return
+        right_margin = 16
+        top_margin = 10
+        x = max(
+            right_margin,
+            self.main_container.width() - self.header_status_label.width() - right_margin,
+        )
+        self.header_status_label.move(x, top_margin)
+
+    def resizeEvent(self, event):
+        """窗口尺寸变化时保持顶部提示位置稳定。"""
+        super().resizeEvent(event)
+        if hasattr(self, "header_status_label") and self.header_status_label.isVisible():
+            self._position_header_status_label()
+
+    def _requires_youtube_prewarm(self, urls):
+        """判断本次任务是否包含 YouTube 下载。"""
+        for url in urls:
+            url = url.strip()
+            if url and self.downloader.detect_platform(url) == 'youtube':
+                return True
+        return False
+
+    def _start_youtube_prewarm(self):
+        """异步预热 YouTube 组件，避免阻塞界面。"""
+        if self._prewarm_in_progress:
+            return
+
+        self._prewarm_in_progress = True
+        self._set_header_status("正在初始化 YouTube 下载组件...")
+
+        threading.Thread(
+            target=self._run_youtube_prewarm,
+            daemon=True,
+        ).start()
+
+    def _run_youtube_prewarm(self):
+        """后台执行 YouTube 组件预热。"""
+        bin_dir = Path(__file__).parent.parent.parent / "bin"
+        ok, message = prewarm_youtube_pot(bin_dir)
+        self.youtube_prewarm_finished.emit(ok, message)
+
+    def _handle_youtube_prewarm_finished(self, success, message):
+        """处理异步预热完成回调。"""
+        was_waiting = self._prewarm_in_progress
+        self._prewarm_in_progress = False
+
+        if not was_waiting or self._pending_download_request is None:
+            self._set_header_status("")
+            return
+
+        if not success:
+            self._pending_download_request = None
+            self._set_header_status("YouTube 组件初始化失败", is_error=True)
+            QMessageBox.critical(self, "初始化失败", message)
+            self._enable_controls()
+            return
+
+        self._set_header_status("")
+        self._launch_pending_downloads()
+
+    def _launch_pending_downloads(self):
+        """按既定参数真正启动下载任务。"""
+        request = self._pending_download_request
+        if not request:
+            return
+
+        self._pending_download_request = None
+        success = True
+
+        for url in request['urls']:
+            url = url.strip()
+            if not url:
+                continue
+
+            try:
+                task_id = f"Task-{len(self.download_tasks)+1}"
+                self.create_download_task_widget(url, task_id)
+
+                if not self.downloader.start_download(
+                    url,
+                    request['output_path'],
+                    request['format_options'],
+                    request['browser'],
+                ):
+                    success = False
+                    break
+            except Exception as e:
+                success = False
+                error_msg = str(e)
+                QMessageBox.critical(
+                    self,
+                    "下载失败",
+                    f"启动下载失败：\n\n{error_msg}\n\n"
+                    "可能的解决方法：\n"
+                    "1. 确保选择的浏览器已正确安装\n"
+                    "2. 确保已在浏览器中登录 YouTube\n"
+                    "3. 尝试使用其他浏览器\n"
+                    "4. 检查网络连接"
+                )
+                self._enable_controls()
+                return False
+
+        if not success:
+            self._enable_controls()
+
+        return success
 
     def clear_download_history(self):
         """清空下载历史"""

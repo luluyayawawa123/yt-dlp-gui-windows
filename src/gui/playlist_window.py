@@ -1,21 +1,29 @@
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, 
                            QPushButton, QLineEdit, QLabel, QMessageBox, QTextEdit, QHBoxLayout, QFileDialog, QComboBox, QCheckBox, QDialog,
                            QStyle, QSizePolicy, QApplication)
-from PyQt6.QtCore import Qt, QProcess, QProcessEnvironment
+from PyQt6.QtCore import Qt, QProcess, QProcessEnvironment, pyqtSignal
 from PyQt6.QtGui import QTextCursor, QIcon
 from .saved_urls_dialog import SavedURLsDialog
+from core.youtube_pot import prewarm_youtube_pot
 import os
 import logging
 import re
 import requests
 from bs4 import BeautifulSoup
+from pathlib import Path
+import threading
 
 class PlaylistWindow(QMainWindow):
+    youtube_prewarm_finished = pyqtSignal(bool, str)
+
     def __init__(self, config, parent=None):
         super().__init__()
         self.config = config
         self.parent_window = parent
         self.process = None
+        self._pending_download_start = None
+        self._prewarm_in_progress = False
+        self.youtube_prewarm_finished.connect(self._handle_youtube_prewarm_finished)
         self._reset_download_tracking()
         self.setup_ui()
         
@@ -37,6 +45,24 @@ class PlaylistWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
         layout.setContentsMargins(10, 10, 10, 10)  # 设置边距
+
+        self.header_status_label = QLabel(central_widget)
+        self.header_status_label.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
+        )
+        self.header_status_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.header_status_label.setStyleSheet("""
+            QLabel {
+                color: #0288D1;
+                font-size: 9pt;
+                font-weight: 500;
+                padding: 0 2px;
+                background: transparent;
+            }
+        """)
+        self.header_status_label.hide()
         
         # URL输入区域改为组合布局
         url_layout = QHBoxLayout()
@@ -711,16 +737,20 @@ class PlaylistWindow(QMainWindow):
             logging.debug(f"下载参数: {args}")
             logging.debug(f"下载目录: {output_path}")
             logging.debug(f"下载记录文件: {archive_file}")
-            
-            # 开始下载
-            self.process.start(program, args)
-            self.download_button.setEnabled(False)
-            self.status_label.setText("下载中...")
-            logging.info(f"开始下载播放列表: {url}")
-            
-            # 保存当前路径到配置
-            self.config.config['download_path'] = output_path
-            self.config.save_config()
+
+            bin_dir_path = Path(root_dir) / "bin"
+            self._pending_download_start = {
+                "program": program,
+                "args": args,
+                "output_path": output_path,
+                "url": url,
+            }
+
+            if "youtube.com" in url.lower() or "youtu.be" in url.lower():
+                self._start_youtube_prewarm(bin_dir_path)
+                return
+
+            self._start_pending_download_process()
             
         except Exception as e:
             logging.error(f"下载出错: {str(e)}", exc_info=True)
@@ -810,6 +840,7 @@ class PlaylistWindow(QMainWindow):
         self._finalize_pending_for_item(self.current_item_id, switched_to_next=False)
         self._append_download_summary()
         self.download_button.setEnabled(True)
+        self.back_button.setEnabled(True)
         if exit_code == 0:
             self.status_label.setText("下载完成")
             logging.info("下载成功完成")
@@ -819,6 +850,14 @@ class PlaylistWindow(QMainWindow):
     
     def back_to_main(self):
         """返回主窗口"""
+        if self._prewarm_in_progress:
+            self._prewarm_in_progress = False
+            self._pending_download_start = None
+            self._set_header_status("")
+            self.parent_window.show()
+            self.hide()
+            return
+
         if self.process and self.process.state() == QProcess.ProcessState.Running:
             reply = QMessageBox.question(
                 self,
@@ -836,6 +875,15 @@ class PlaylistWindow(QMainWindow):
     
     def closeEvent(self, event):
         """关闭窗口事件"""
+        if self._prewarm_in_progress:
+            self._prewarm_in_progress = False
+            self._pending_download_start = None
+            self._set_header_status("")
+            if self.parent_window:
+                self.parent_window.show()
+            event.accept()
+            return
+
         if self.process and self.process.state() == QProcess.ProcessState.Running:
             reply = QMessageBox.question(
                 self,
@@ -853,6 +901,110 @@ class PlaylistWindow(QMainWindow):
         if self.parent_window:
             self.parent_window.show()
         event.accept()
+
+    def _set_header_status(self, text, is_error=False):
+        """更新顶部状态提示。"""
+        color = "#D32F2F" if is_error else "#0288D1"
+        self.header_status_label.setStyleSheet(
+            f"""
+            QLabel {{
+                color: {color};
+                font-size: 9pt;
+                font-weight: 500;
+                padding: 0 2px;
+                background: transparent;
+            }}
+            """
+        )
+        self.header_status_label.setText(text)
+        if text:
+            self.header_status_label.adjustSize()
+            self._position_header_status_label()
+            self.header_status_label.show()
+            self.header_status_label.raise_()
+        else:
+            self.header_status_label.hide()
+
+    def _position_header_status_label(self):
+        """将顶部状态提示固定在窗口右上角，不占用布局空间。"""
+        right_margin = 12
+        top_margin = 10
+        x = max(
+            right_margin,
+            self.centralWidget().width() - self.header_status_label.width() - right_margin,
+        )
+        self.header_status_label.move(x, top_margin)
+
+    def resizeEvent(self, event):
+        """窗口尺寸变化时保持顶部提示位置稳定。"""
+        super().resizeEvent(event)
+        if self.header_status_label.isVisible():
+            self._position_header_status_label()
+
+    def _start_youtube_prewarm(self, bin_dir):
+        """异步预热 YouTube 组件，避免界面卡死。"""
+        if self._prewarm_in_progress:
+            return
+
+        self._prewarm_in_progress = True
+        self.download_button.setEnabled(False)
+        self.back_button.setEnabled(False)
+        self._set_header_status("正在初始化 YouTube 下载组件...")
+
+        threading.Thread(
+            target=self._run_youtube_prewarm,
+            args=(Path(bin_dir),),
+            daemon=True,
+        ).start()
+
+    def _run_youtube_prewarm(self, bin_dir):
+        """后台执行预热。"""
+        ok, message = prewarm_youtube_pot(bin_dir)
+        self.youtube_prewarm_finished.emit(ok, message)
+
+    def _handle_youtube_prewarm_finished(self, success, message):
+        """处理预热完成后的界面与启动逻辑。"""
+        was_waiting = self._prewarm_in_progress
+        self._prewarm_in_progress = False
+
+        if not was_waiting or self._pending_download_start is None:
+            self.download_button.setEnabled(True)
+            self.back_button.setEnabled(True)
+            self._set_header_status("")
+            return
+
+        if not success:
+            self.download_button.setEnabled(True)
+            self.back_button.setEnabled(True)
+            self.status_label.setText("初始化失败")
+            self._set_header_status("YouTube 组件初始化失败", is_error=True)
+            pending = self._pending_download_start
+            self._pending_download_start = None
+            logging.error(f"YouTube 组件初始化失败: {message}")
+            QMessageBox.critical(self, "错误", f"下载失败：{message}")
+            if pending and pending.get("output_path"):
+                self.config.config['download_path'] = pending["output_path"]
+                self.config.save_config()
+            return
+
+        self._set_header_status("")
+        self._start_pending_download_process()
+
+    def _start_pending_download_process(self):
+        """真正启动已准备好的播放列表下载进程。"""
+        pending = self._pending_download_start
+        if not pending:
+            return
+
+        self._pending_download_start = None
+        self.process.start(pending["program"], pending["args"])
+        self.download_button.setEnabled(False)
+        self.back_button.setEnabled(True)
+        self.status_label.setText("下载中...")
+        logging.info(f"开始下载播放列表: {pending['url']}")
+
+        self.config.config['download_path'] = pending["output_path"]
+        self.config.save_config()
 
     def save_current_url(self):
         """保存当前URL到收藏夹"""

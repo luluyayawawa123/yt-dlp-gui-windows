@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 import shutil
 import re
+import subprocess
 
 FALLBACK_ENCODINGS = (
     "utf-8",
@@ -84,6 +85,15 @@ def get_version() -> str:
     return default_version
 
 
+def find_npm_executable() -> str | None:
+    """定位打包机可用的 npm 可执行文件。"""
+    for candidate in ("npm.cmd", "npm.exe", "npm"):
+        npm_path = shutil.which(candidate)
+        if npm_path:
+            return npm_path
+    return None
+
+
 def build() -> None:
     clean_build_files()
 
@@ -127,10 +137,9 @@ def build() -> None:
 
     src_bin = root_dir / "bin"
     if src_bin.exists():
-        import subprocess
         # 使用 robocopy 复制 bin 目录，排除 node_modules 和 .git
-        # node_modules 包含 Deno 的 junction（绝对路径），复制后会失效
-        # 后续会在目标目录重新 deno install 生成正确的 junction
+        # 发布版需要允许用户随意改目录名，所以不能携带 Deno install 生成的绝对路径 junction
+        # 改为在目标目录使用 npm ci 生成可迁移的真实 node_modules 目录树
         result = subprocess.run(
             ['robocopy', str(src_bin), str(bin_dir), '/E',
              '/XD', '.git', 'node_modules',
@@ -142,21 +151,30 @@ def build() -> None:
             raise RuntimeError(f"robocopy 失败，返回码: {result.returncode}")
         print(f"已复制 bin 目录到 {bin_dir}")
 
-        # 在目标目录重新安装 Deno 依赖，生成正确的 junction
         server_dir = bin_dir / "bgutil-ytdlp-pot-provider" / "server"
-        deno_exe = bin_dir / "deno.exe"
-        if server_dir.exists() and deno_exe.exists():
-            print("正在安装 PO Token 脚本依赖...")
+        package_json = server_dir / "package.json"
+        package_lock = server_dir / "package-lock.json"
+        if server_dir.exists() and package_json.exists() and package_lock.exists():
+            npm_exe = find_npm_executable()
+            if not npm_exe:
+                raise RuntimeError(
+                    "未找到可用的 npm。请在打包机安装 Node.js 后重试；"
+                    "这只影响打包阶段，客户运行绿色版不需要安装 Node.js。"
+                )
+
+            print("正在安装 PO Token 脚本 npm 依赖...")
             install_result = subprocess.run(
-                [str(deno_exe), 'install', '--allow-scripts=npm:canvas', '--frozen'],
+                [npm_exe, 'ci', '--omit=dev', '--no-fund', '--no-audit'],
                 cwd=str(server_dir),
                 capture_output=True, text=True,
                 encoding='utf-8', errors='ignore'
             )
             if install_result.returncode != 0:
-                print(f"警告: deno install 失败: {install_result.stderr}")
+                print(f"npm ci 标准输出:\n{install_result.stdout}")
+                print(f"npm ci 标准错误:\n{install_result.stderr}")
+                raise RuntimeError(f"PO Token 脚本依赖安装失败，返回码: {install_result.returncode}")
             else:
-                print("PO Token 脚本依赖安装完成")
+                print("PO Token 脚本 npm 依赖安装完成")
 
     config_dir = dist_dir / "config"
     config_dir.mkdir(exist_ok=True)
