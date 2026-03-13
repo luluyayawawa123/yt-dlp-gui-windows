@@ -58,7 +58,7 @@ class Downloader(QObject):
             },
             'xiaohongshu': {
                 'domains': ['xiaohongshu.com', 'xhslink.com'],
-                'require_cookies': False,
+                'require_cookies': True,
                 'default_browser': None,
                 'special_args': [
                     '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
