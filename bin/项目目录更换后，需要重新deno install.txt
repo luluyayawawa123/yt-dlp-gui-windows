@@ -1,0 +1,34 @@
+如果把整个项目复制到了新目录（比如 C:\字幕工作流\yt-dlp-gui-windows2），Deno 依赖里的路径就会失效。
+
+你需要执行以下 两行命令 来删掉旧的依赖并重新安装。
+
+请打开 CMD（非 PowerShell），如果你确实把目录改成了 yt-dlp-gui-windows2，直接复制并在 CMD 中执行下面这段代码：
+
+cd /d "C:\字幕工作流\yt-dlp-gui-windows2\bin\bgutil-ytdlp-pot-provider\server"
+rd /s /q node_modules
+"C:\字幕工作流\yt-dlp-gui-windows2\bin\deno.exe" install --allow-scripts=npm:canvas --frozen
+
+执行完成后： 你会看到类似 Installed 313 packages... 的提示，说明依赖已经基于新路径重建成功，此时就可以正常使用 GUI 下的下载和打包功能了。
+
+------------------------------
+
+
+新版重建方案（当前推荐）
+
+现在更推荐使用 npm 重建 server/node_modules，而不是继续使用 deno install。
+
+原因：
+旧方案生成的部分 node_modules 链接可能绑定旧目录；
+新版改为使用 npm 生成可迁移的真实依赖目录，和当前打包逻辑也保持一致。
+
+如果你更换了开发目录，请打开 CMD（非 PowerShell），执行：
+
+cd /d "C:\字幕工作流\yt-dlp-gui-windows2\bin\bgutil-ytdlp-pot-provider\server"
+rd /s /q node_modules
+npm.cmd ci --omit=dev --no-fund --no-audit
+
+如果你后续还要在这个 server 目录里做开发、调试、lint，也可以改用：
+
+npm.cmd ci
+
+执行完成后，node_modules 会基于当前新目录重建，开发版即可继续正常使用。

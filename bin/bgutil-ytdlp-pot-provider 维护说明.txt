@@ -1,0 +1,132 @@
+bgutil-ytdlp-pot-provider 维护说明
+==============================
+
+一、这个东西是什么
+-------------------
+它是 yt-dlp 的 PO Token 提供组件。
+现在 YouTube 的部分视频流在下载前需要额外的 PO Token 校验；
+没有这个校验时，可能出现 403、拿不到部分清晰度、或视频流不可用。
+
+这个项目分两部分：
+1. provider：负责生成 PO Token
+2. plugin：负责把 provider 生成的 Token 提供给 yt-dlp
+
+本项目当前采用的是：
+1. script 方式
+2. Deno 运行 generate_once.ts
+3. 通过 server_home 指向本地 server 目录
+
+
+二、去哪里下载
+---------------
+官方仓库：
+https://github.com/Brainicism/bgutil-ytdlp-pot-provider
+
+官方 Releases：
+https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases
+
+维护时只建议参考官方仓库和官方 Releases，不建议找第三方转载包。
+
+
+三、当前项目里哪些文件属于它
+----------------------------
+1. provider 源码目录：
+bin/bgutil-ytdlp-pot-provider/server/
+
+2. provider plugin 压缩包：
+bin/yt-dlp-plugins/bgutil-ytdlp-pot-provider.zip
+
+注意：
+这两个部分最好保持同版本。
+从官方 1.2.0 开始，plugin 与 server/script 版本不匹配时，可能直接无法工作。
+
+
+四、后期升级时要更新什么
+------------------------
+建议同时更新下面两个东西：
+
+1. server 目录
+来源：官方仓库同版本 tag 的 server 目录
+
+2. bgutil-ytdlp-pot-provider.zip
+来源：官方 Releases 附件里的 zip
+
+不要只更新其中一个。
+
+
+五、推荐升级步骤
+----------------
+假设你准备升级到官方某个新版本（例如 1.3.1）：
+
+1. 先确认你的 yt-dlp 版本是否满足新 provider 要求
+   官方 README 当前写的是：yt-dlp 需要 2025.05.22 或以上版本
+
+2. 打开官方 Releases，确认目标版本
+
+3. 下载官方 release 里的：
+   bgutil-ytdlp-pot-provider.zip
+
+4. 从官方仓库获取同版本源码
+   方法 A：下载对应 tag 的源码压缩包
+   方法 B：git clone 指定 tag
+
+5. 用新版本里的 server 目录覆盖本项目：
+   bin/bgutil-ytdlp-pot-provider/server/
+
+6. 用新版本的 zip 覆盖本项目：
+   bin/yt-dlp-plugins/bgutil-ytdlp-pot-provider.zip
+
+7. 如果你改的是开发目录，再重建一次 server/node_modules
+
+
+六、开发版如何重建
+------------------
+如果你更新了 server，或者更换了开发目录，建议执行：
+
+cd /d "C:\字幕工作流\yt-dlp-gui-windows2\bin\bgutil-ytdlp-pot-provider\server"
+rd /s /q node_modules
+npm.cmd ci --omit=dev --no-fund --no-audit
+
+如果你后续还要在这个 server 目录里开发、调试、lint，可以改用：
+
+npm.cmd ci
+
+说明：
+当前项目已经不再推荐使用 deno install 来重建开发版依赖；
+现在更推荐用 npm 生成可迁移的 node_modules。
+
+
+七、绿色版是否还需要 Deno
+--------------------------
+需要。
+
+但这是“软件自带并运行时使用”，不是“让用户自己安装”。
+
+当前项目里：
+1. node_modules 由 npm 准备
+2. 运行 generate_once.ts 时仍然会用到 bin/deno.exe
+
+所以：
+1. 用户不需要自己安装 Deno
+2. 但打包内容里仍然要保留 deno.exe
+
+
+八、升级后如何自测
+------------------
+至少检查下面几项：
+
+1. 普通模式首次下载 YouTube 是否正常
+2. 播放列表模式首次下载 YouTube 是否正常
+3. 改绿色版目录名后是否正常
+4. 再次下载是否正常
+5. verbose 日志里 provider 版本是否一致
+
+可重点观察日志中是否出现类似：
+[debug] [youtube] [pot] PO Token Providers: bgutil:http-x.x.x / bgutil:script-node-x.x.x / bgutil:script-deno-x.x.x
+
+
+九、额外提醒
+-----------
+1. 官方从 1.3.0 开始加入了 Deno 支持
+2. script 方式本身比常驻 HTTP server 更容易遇到冷启动开销
+3. 如果以后高并发或首次启动性能成为问题，可以再评估是否切到 HTTP server 方案

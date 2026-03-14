@@ -86,17 +86,12 @@ coverage/
 # 忽略打包或转换文件
 YT-DLP-GUI-Windows.spec
 
-# 保留bin目录但忽略其中某些文件
-bin/*
-!bin/*.exe
-!bin/*.dll
-!bin/*.bat
-!bin/bgutil-ytdlp-pot-provider/
-!bin/yt-dlp-plugins/
-
-# node_modules 包含 Deno junction（绝对路径），不适合提交 Git
-# 打包时会通过 deno install 重新生成
+# bin 目录中的运行时依赖
+# node_modules 为重建产物，不适合提交 Git
 bin/bgutil-ytdlp-pot-provider/server/node_modules/
 
 # deno.exe 超过 GitHub 100MB 限制，通过 Release 附件分发
 bin/deno.exe
+
+# Windows 资源管理器或同步工具产生的伴生文件
+bin/._*.exe
