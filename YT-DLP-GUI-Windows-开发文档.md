@@ -1,145 +1,265 @@
 # YT-DLP GUI for Windows 开发文档
 
-> 本文面向希望参与维护与扩展的开发者，涵盖架构、目录、开发命令、测试以及发布注意事项。阅读完毕后，你应当能够在本地搭建环境、理解主要模块的职责，并安全地交付新功能。对于复杂排障和打包流程也有详尽补充。
+> 本文面向希望参与维护与扩展的开发者，重点说明当前实现、打包链路、YouTube 组件机制和发布注意事项。阅读后应能在本地完成开发、排障和打包，不被历史方案误导。
 
 ## 1. 项目概述与技术栈
-YT-DLP GUI for Windows 旨在为 yt-dlp 命令行工具提供一套原生 Windows 图形界面。核心目标是让用户通过图形配置即可实现视频/音频下载、多平台（YouTube、B站、小红书、抖音等）解析、批量任务调度以及深度的日志追踪。
+YT-DLP GUI for Windows 为 `yt-dlp` 提供原生 Windows 图形界面，目标是让用户在不接触命令行的前提下完成高画质视频下载、播放列表下载、Cookie 读取、日志排障和多平台解析。
 
-软件亮点包括：单/多 URL 支持、播放列表订阅（含断点续传/跳过已下载特性）、集成 Firefox 等浏览器 Cookie 免登录下载、画质格式细粒度控制、任务收藏以及独立极客风实时监控日志。
+软件亮点包括：单/多 URL 支持、播放列表/频道下载、Firefox Cookie 免手填、画质格式细粒度控制、下载任务可视化和独立实时日志窗口。
 
 **主要技术栈：**
-- **语言与运行时**：Python 3.11+，内置 `.venv` 提供完全隔离依赖环境。
-- **GUI 框架**：PyQt6 Widgets，配合自定义无边框窗口、独立进程对话框与平滑圆角日志面板。
-- **下载核心与媒体处理**：yt-dlp（核心 downloader）、ffmpeg（转码、音频合并、外挂字幕内嵌/转换）。
-- **签名与反爬依赖**：Deno 及 `bgutil-ytdlp-pot-provider`。用于为 YouTube 最新 SABR 协议生成 PO Token（Proof of Origin），突破高分辨率下载和 403 封锁。
-- **打包分发**：PyInstaller + `build.py` 自动化脚本，通过自定义 PyInstaller hooks (`src/hooks/windows_hook.py`) 注入资源与依赖环境拷贝。
+- **语言与运行时**：Python 3.10+，使用项目内 `.venv` 作为唯一开发环境。
+- **GUI 框架**：PyQt6 Widgets。
+- **下载核心与媒体处理**：`yt-dlp` + `ffmpeg`。
+- **YouTube 相关运行时**：`deno.exe` + `bgutil-ytdlp-pot-provider`。
+  - 项目默认启用 `PO Token provider` 支持。
+  - 是否实际生成/使用 `PO Token`，由 `yt-dlp` 当前内核、视频场景和所选 client 决定。
+  - 保留这套能力的目的，是提高 YouTube 高画质尤其是 4K 场景的成功率。
+- **打包分发**：PyInstaller + `build.py` 自动化脚本。
 - **辅助库**：requests、BeautifulSoup4、logging。
 
 ## 2. 环境准备与基础命令
 1. **激活虚拟环境（必须）**
-   为避免污染全局环境和保证打包一致性，**必须**使用项目自带或自己创建的隔离虚拟环境。
    ```powershell
    .\.venv\Scripts\activate
    ```
-2. **安装核心依赖（首次或 requirements 更新后）**
+2. **安装 Python 依赖**
    ```powershell
    pip install -r requirements.txt
    ```
-3. **运行 GUI 进行功能验证**
+3. **运行 GUI**
    ```powershell
    python src/main.py
    ```
-4. **运行现有集成与回归测试**
+4. **运行现有回归探针**
    ```powershell
    python test_title_extraction.py
    python test_log_feature.py
    ```
-5. **构建 Windows 分发包**
-   使用自定义封装的脚本：
+5. **构建 Windows 发行包**
    ```powershell
    python build.py
    ```
-   构建会利用 PyInstaller，产物位于 `dist/`，同时会自动使用 `robocopy` 搬移 `bin/` 目录中的第三方二进制依赖文件，并在 `dist` 后处理阶段通过 `deno install` 安装服务端依赖。
-6. **常用辅助机制**
-   - `bin/更新内核.bat`：用于用户和开发者一键更新 yt-dlp 自身可执行文件。
-   - `clear_icon_cache.py` / `create_icons.py` / `check_exe_icon.py`：处理 PyQt 的缓存系统与图标打包问题。
+   构建产物位于 `dist/`。当前打包流程会：
+   - 调用 PyInstaller 生成主体程序
+   - 复制 `bin/` 运行时目录
+   - 在打包产物里的 `bin/bgutil-ytdlp-pot-provider/server` 下执行  
+     `npm.cmd ci --omit=dev --no-fund --no-audit`
+   - 生成可迁移的 `node_modules`
+
+   注意：
+   - **打包机需要可用的 `npm.cmd`**
+   - **终端用户不需要安装 Node.js 或 Deno**
+
+6. **常用辅助文件**
+   - `bin/更新内核.bat`：更新 `yt-dlp.exe`
+   - `bin/项目目录更换后，需要重新deno install.txt`：旧方案说明 + 当前推荐的开发目录重建方案
+   - `bin/bgutil-ytdlp-pot-provider 维护说明.txt`：后续升级 provider/plugin 时的维护入口
+   - `clear_icon_cache.py` / `create_icons.py` / `check_exe_icon.py`：图标与缓存处理
 
 ## 3. 目录结构
-```
+```text
 yt-dlp-gui-windows/
-├─ bin/                 # 放置 yt-dlp.exe、ffmpeg.exe、deno.exe 及其它二进制运行时依赖
-│  ├─ bgutil-ytdlp-pot-provider/ # PO Token 服务端签名组件（突破 YouTube 限制要素）
-│  └─ 更新内核.bat      # 针对普通用户设计的内核更新程序
-├─ config/              # 开发/运行时的用户配置、日志（debug.log）、下载记录
-├─ icons/ screenshots/  # UI 图像资源与示例截图
+├─ bin/
+│  ├─ bgutil-ytdlp-pot-provider/      # YouTube PO Token provider 服务端脚本目录
+│  ├─ yt-dlp-plugins/                 # 对应的 yt-dlp plugin zip
+│  ├─ 更新内核.bat
+│  ├─ 项目目录更换后，需要重新deno install.txt
+│  └─ bgutil-ytdlp-pot-provider 维护说明.txt
+├─ config/                            # 运行配置、日志、下载记录
+├─ icons/ screenshots/                # UI 资源
 ├─ src/
-│  ├─ main.py           # 程序入口点，处理环境变量（如 UTF-8 与 PATH 初始化）及全局异常拦截
+│  ├─ main.py                         # 程序入口、PATH/编码初始化
 │  ├─ core/
-│  │  ├─ config.py      # 配置中心、跨平台/打包路径解析（_MEIPASS 支持）及集中式文件/流式日志处理
-│  │  └─ downloader.py  # 核心桥接器。执行平台解析、Cookie提取、进程启动和输出日志解析/状态投递
+│  │  ├─ config.py                    # 配置中心与路径解析
+│  │  ├─ downloader.py                # 下载命令组装、QProcess 管理、日志解析
+│  │  └─ youtube_pot.py               # YouTube 组件预热逻辑
 │  ├─ gui/
-│  │  ├─ main_window.py # 主面板：常规 URL 输入、选项、并发可视化任务流列表及基础状态机
-│  │  ├─ playlist_window.py  # 高级列表/频道界面：稳健重试逻辑(Retry Policy)、断点续传档案及合并监控
-│  │  ├─ log_window.py       # 实时独立的极客风日志观测器，直接监控后台线程原生打印 (RAW_LOG)
-│  │  └─ saved_urls_dialog.py# 用于管理收藏的订阅源和频繁访问的频道记录
+│  │  ├─ main_window.py               # 普通下载窗口
+│  │  ├─ playlist_window.py           # 播放列表/频道窗口
+│  │  ├─ log_window.py                # 实时日志窗口
+│  │  └─ saved_urls_dialog.py         # 收藏管理
 │  └─ hooks/
-│     └─ windows_hook.py     # 针对 Windows 下的 PyInstaller 的额外 hook
-├─ dist/ build/         # PyInstaller 打包产物与中间文件缓存
-├─ tests                # 各类集成回归探针（存放在根目录下的 test_*.py 等）
-├─ build.py             # 核心打包构建脚本（包含二次安装依赖的后处理）
-├─ build.bat            # 包装了构建流程的快速脚本
-├─ version.txt          # 工程版本号锚定文件
-├─ README.md            # 面向终端用户的快速操作说明
-└─ YT-DLP-GUI-Windows-开发文档.md # 目前您正在阅读的内容
+│     └─ windows_hook.py              # PyInstaller Windows hook
+├─ dist/ build/                       # 打包产物与中间目录
+├─ test_*.py                          # 根目录下的回归探针
+├─ build.py                           # 打包脚本
+├─ version.txt                        # 版本号与 Windows 文件版本信息
+├─ README.md                          # 用户文档
+└─ YT-DLP-GUI-Windows-开发文档.md
 ```
 
-## 4. 核心架构与模块联动剖析
+## 4. 核心架构与模块联动
 
 ### 4.1 运行时环境挂载（`src/main.py`）
-- `main.py` 第一步就是挂载 `bin/` 至当前进程的系统 `PATH` 树中，确保打包后的环境中 `yt-dlp` 和 `ffmpeg` `deno` 随叫随到，而不需要用户额外配置系统环境变量。
-- 强制使用 UTF-8 编码，彻底解决 Windows 下由于默认的 `GBK/GB18030` 引发的外文（日、韩、特殊符号）下载乱码。
+- 启动时会将 `bin/` 加入进程级 `PATH`，确保运行时能找到：
+  - `yt-dlp.exe`
+  - `ffmpeg.exe`
+  - `deno.exe`
+- 强制使用 UTF-8 相关设置，降低 Windows 默认编码导致的标题、日志、文件名乱码问题。
+- 绿色版仍然**自带** `deno.exe`，但用户不需要自行安装 Deno。
 
 ### 4.2 UI 层职责（`src/gui/`）
-- **MainWindow**：通过 `Downloader` 实例创建长生命周期的 `QProcess`。界面上采用高度定制的 CSS 样式，包含进度条、状态提示（例如：“⏬ 下载中”、“🔄 处理中”、“✓ 已完成”）、动态推送到界面的日志组件（调用 `log_window.py`）。
-- **PlaylistWindow**：不仅复用主体逻辑，还在日志抽取正则上下足了功夫。特别设计了 **“网络稳健重试”**（--retries 10 / --fragment-retries 10 / 退避算法）参数，保证在下载数十个切片时就算偶发断连也能坚持下载。内置 `_append_download_summary` 方法最终输出合并统计给用户。
-- **LogWindow**：独立浮动窗口。针对遇到 403 / 拒绝访问错误的高级用户，提供实时 `[RAW_LOG]` 数据流以精确找到失败源头。
+- **MainWindow**
+  - 处理普通视频下载。
+  - 在真正启动 YouTube 下载前，异步预热 `YouTube` 组件。
+  - 预热期间在窗口顶部右侧显示状态提示，不侵入主布局高度。
+- **PlaylistWindow**
+  - 处理播放列表/频道下载。
+  - 同样在正式下载前做异步预热。
+  - 保留播放列表场景下的重试、摘要输出和批量任务控制。
+- **LogWindow**
+  - 展示底层原始日志，适合排查 `yt-dlp`、PO Token、网络波动和 `ffmpeg` 合并问题。
 
 ### 4.3 下载管控器（`src/core/downloader.py`）
-整个应用的“大脑”。将单纯的终端命令转化为了精细的结构化异步流：
-- **平台感知智能分发**：依靠传入的 URL 的 `domain` 探测平台属性。
-  - **YouTube**: 强制调起 PO Token 算法 (`bgutil-ytdlp-pot-provider`)。
-  - **小红书**: 处理用户页面拒绝批量下载错误并给出友好提示，自动拦截并整理含有特定特征路由。
-  - **B站 / 抖音**: 自动切换 User-Agent，推荐默认 `MP4` 格式处理。
-- **Cookie 嗅探提取**：自动检索用户环境（或便携版）中主流浏览器（如 Firefox 的 `cookies.sqlite`、Safari 等），以支持用户级别的私密视频查阅。
-- **解析器**：捕获 QProcess 的 StdOut/StdErr，通过一套严密的正则表达式解析进度。识别 `0.0% of 100MiB at 2MB/s ETA 00:00` 流并发送 Qt 信号将格式化结果刷新给界面。
+`downloader.py` 负责把 GUI 选项转成结构化的 `yt-dlp` 参数与进程控制。
 
-### 4.4 打包与依赖装配层（`build.py`）
-- 与标准的 PyInstaller 规范不同，本项目存在 Node/Deno 后端级依赖。
-- 在 `build.py` 运行时：
-  1. 通过正则表达式提取 `version.txt` 或 `main.py` 中记录的版本号供构建用。
-  2. 触发 PyInstaller。
-  3. 执行由 `robocopy` 驱动的纯净二进制目录 `bin/` 的传输。特意抛弃打包前的开发用 `node_modules` 关联。
-  4. 进程呼叫目标目录里的 `deno.exe`，对 `bin/bgutil-ytdlp-pot-provider/server` 进行二次冻结与补齐操作（`--allow-scripts=npm:canvas --frozen`），保证在目标用户的干净机器上签名组件立即可用。
+核心职责：
+- **平台感知分发**
+  - 根据 URL 判断平台，分别组装参数。
+  - YouTube 场景下，默认启用 `PO Token provider` 支持：
+    - 代码会传入 `--extractor-args youtubepot-bgutilscript:server_home=...`
+    - 这表示项目**默认挂上 provider 能力**
+    - 但是否实际生成/使用 token，仍由 `yt-dlp` 内核决定
+- **Cookie 提取**
+  - 支持从 Firefox 等浏览器读取 Cookie，兼顾登录态视频与更稳的 YouTube 下载。
+- **日志解析**
+  - 解析 `yt-dlp` 输出，提取进度、速度、剩余时间、标题和完成状态，并刷新到界面。
 
-## 5. 异常体系与排障指南 (FAQ & Troubleshooting)
+### 4.4 YouTube 预热机制（`src/core/youtube_pot.py`）
+这个模块是当前 YouTube 稳定性的重要组成部分。
 
-开发过程中不可避免会遇到一些下载失败情况，软件的日志体系与判断逻辑会将许多模糊的 `yt-dlp` 报错翻译为友好的故障排除提示：
+背景：
+- `yt-dlp` 在检查 `bgutil-ytdlp-pot-provider` 可用性时，内部只给大约 15 秒超时。
+- Deno 脚本在首次运行、目录刚变更或系统冷启动时，可能会慢于这个时间。
+- 结果就是典型现象：**第一次失败，第二次成功**。
 
-- **报错：“小红书内容提取失败 / B站视频解析失败”**
-  - **原因**：这类错误多因“无痕 / 未登录拦截”或“视频本身需要大会员或下架”。目前小红书不开放纯主页批量提取。
-  - **建议**：引导改用单 URL 并在 `main_window` 执行。
-- **报错：“请求超时 / 连接错误”或出现 "Retrying (10/10)"**
-  - **定位**：通常发生在多片段切片获取阶段（Fragmentation）。程序已应用了退避重试（Backoff algorithm）。
-  - **日志窗口表现**：在 `PlaylistWindow` 中如果完全达到 10 次上限，逻辑会截断当前条目并将目标标记进入 `failed` 摘要列表且不中断整个循环队列。
-- **报错：“合并失败” (`[Merger] error`)**
-  - **原因**：在合并分离的音视频轨道（通常是 YouTube 高于 1080P 或高品质音乐时）失败。往往是目标系统的防病毒或缺失 ffmpeg 引起。
-- **报错：“未找到 Firefox cookies” 或 403 封锁**
-  - **排查**：需确认 Firefox 是否被正确安装在系统 `App Paths`、是否用其正常完整登陆了目标网站一次。
+当前方案：
+- 在 GUI 层发起 YouTube 下载前，先异步执行一次轻量预热。
+- 预热本质是调用 `generate_once.ts --version`，把 Deno、模块解析和当前路径预先热起来。
+- Windows 下预热子进程会隐藏黑色控制台窗口，减少对用户的打扰。
+
+这样做的目的不是“提前下载视频”，而是规避首次冷启动撞上 `yt-dlp` 的内部超时。
+
+### 4.5 打包与依赖装配层（`build.py`）
+当前打包逻辑已经和旧版不同，维护时要特别注意。
+
+**旧方案问题：**
+- 过去依赖 `deno install`
+- 生成的 `node_modules` 在 Windows 下可能带绝对路径 `junction`
+- 一旦绿色版改名或移动目录，依赖可能失效
+
+**当前方案：**
+1. 读取版本号
+2. 运行 PyInstaller
+3. 复制 `bin/` 到发行目录，同时排除开发期的 `node_modules`
+4. 在发行目录的 `bin/bgutil-ytdlp-pot-provider/server` 下执行：
+   ```powershell
+   npm.cmd ci --omit=dev --no-fund --no-audit
+   ```
+5. 生成真实、可迁移的 `node_modules`
+
+这意味着：
+- 绿色版改名或移动目录后，`bgutil` 依赖不再因为绝对路径 `junction` 而失效
+- 绿色版仍然携带 `deno.exe`
+- 但不再依赖用户手动执行 `deno install`
+
+## 5. FAQ 与排障指南
+
+### 5.1 第一次 YouTube 下载失败，第二次成功
+常见原因分两类：
+- **旧问题**：Deno 脚本冷启动太慢，撞上 `yt-dlp` 内部约 15 秒检查超时
+- **新问题**：真实下载阶段的网络波动、YouTube 挑战变化或 token 重新生成失败
+
+当前项目已通过异步预热解决第一类问题。如果还有“第一次失败，第二次成功”，优先看实时日志里是否发生在：
+- 组件检查阶段
+- 真实 token 生成阶段
+- 实际流下载阶段
+
+### 5.2 开发目录改路径后，provider 失效
+对开发版来说，这仍然可能发生。
+
+原因：
+- 开发目录下的 `server/node_modules` 可能来自旧的 `deno install` 或历史路径
+- 改项目目录后，旧依赖解析可能失效
+
+当前推荐重建方式：
+```powershell
+cd .\bin\bgutil-ytdlp-pot-provider\server
+Remove-Item -Recurse -Force .\node_modules
+npm.cmd ci --omit=dev --no-fund --no-audit
+```
+
+不要再把 `deno install` 作为当前首选重建方式。
+
+### 5.3 绿色版改名或移动目录后不能下载
+当前打包方案已经针对这个问题做了修复：
+- 打包时改用 `npm.cmd ci`
+- 不再依赖路径绑定的 `junction`
+
+如果以后又出现回归，优先检查：
+- `build.py` 是否被改回旧方案
+- `dist/.../server/node_modules` 是否真的来自 `npm ci`
+
+### 5.4 日志里看到视频音频分离下载，再合并，是否正常
+正常。
+
+对于 YouTube 高画质（尤其高于 1080P）：
+- 常见情况就是视频流和音频流分离
+- `yt-dlp` 会分别下载
+- 最后交给 `ffmpeg` 合并
+
+即便这次前面实际用了 `PO Token`，后面仍然可能表现为传统的“视频 + 音频 + 合并”流程，这不冲突。
+
+### 5.5 什么时候需要怀疑内核问题
+如果 YouTube 4K 突然大面积失效，建议按这个顺序检查：
+1. 当前是否已是官方最新稳定版 `yt-dlp`
+2. `deno.exe` 是否仍存在且可正常运行
+3. 同视频是否能在命令行直接复现
+4. 若稳定版仍异常，再用官方 `nightly` 做验证
+
+当前建议：
+- **默认发布**：官方稳定版
+- **异常验证**：官方 `nightly`
 
 ## 6. 开发工作流建议
-1. **启动测试环境**：
-   务必运行 `.\.venv\Scripts\activate` 激活环境后执行 `python src/main.py` 测试基本运行状态。
-2. **遵守规范与编码格式**：
-   提交任何影响命令行组装的代码时（例如 `downloader.py` 中的 `args.extend(...)` ），必须要特别注意参数之间空格的连接，并通过 GUI 中的日志窗口验证组装后实际执行的拼接串是否越界或格式错乱。
-   注意中文字符处理和控制字符编码，保持 `utf-8` 基准。
-3. **增加特定网域支持**：
-   在 `src/core/downloader.py` 的 `self.platform_configs` 字典中注册对应的域名、必要的 Cookies 限定布尔值、特定 `--extractor-args` 及回滚推荐格式（`default_format`）。
-4. **提交代码前**：
-   使用独立的探针文件跑一次简单的单元确认：
+1. **始终先激活虚拟环境**
+   ```powershell
+   .\.venv\Scripts\activate
+   ```
+2. **先跑 GUI，再看日志**
+   任何影响下载命令组装、YouTube 流程或日志解析的修改，都应先用 `python src/main.py` 做界面回归，再看实时日志验证实际命令。
+3. **修改 YouTube 流程时要有全局视角**
+   优先考虑：
+   - 普通下载模式与播放列表模式是否都受影响
+   - 绿色版目录迁移是否会回归
+   - 是否会让用户再次看到黑色控制台窗口
+   - 是否会让界面出现“未响应”
+4. **提交前至少执行**
    ```powershell
    python test_title_extraction.py
    python test_log_feature.py
    ```
-5. **版本释出准备**：
-   在推向主分支打包前，必须：
-   - 更新 `version.txt` 与 `src/main.py` 内部的变量。
-   - 打开脚本运行 `bin/更新内核.bat` 获取最新的上游提取规则（防 403 改版）。
-   - 最后执行 `python build.py` 打包产出绿色的发行版（存于 `dist/` 中）。
+5. **发布前检查**
+   - 同步 `version.txt` 与 `src/main.py`
+   - 运行 `bin/更新内核.bat`
+   - 执行 `python build.py`
+   - 至少验证一次：
+     - 正常目录下载
+     - 改名后下载
+     - 移动目录后下载
 
 ## 7. 协作与 PR 守则
-- **Commit 及 PR 语言**：必须使用**中文描述**，采用现在时简单句或者祈使句（例：“修复小红书解析规则崩溃问题”）。
-- **影响评估**：任何有关 `yt-dlp` 与 `ffmpeg` 系统调用参数级别的修改，请务必详细附带本地成功验证此平台及另一平台的无退化报告结果。对图形 UI 改动请提供相关的界面截图以便高效 review。
-- 此项目所有图形模块和组件都是在隔离的信号上下文中异步执行，避免向主 PyQt 事件循环添加密集型的长耗时 CPU 操作阻塞线程。任何读取大文件或进行远端 Socket 重连一定要放置在新开启的 QThread 或利用 QProcess 的后台流完成回调操作。
+- Commit 与 PR 说明统一使用中文。
+- 涉及 `yt-dlp`、`ffmpeg`、`deno`、`bgutil-ytdlp-pot-provider` 的修改，必须附带本地验证结论。
+- UI 修改应说明是否影响布局高度、状态提示位置和用户可感知的交互。
+- 不要把开发目录里的个人 Cookie、缓存和用户路径写死到仓库。
+- 若需升级 `bgutil-ytdlp-pot-provider`，先看：
+  - `bin/bgutil-ytdlp-pot-provider 维护说明.txt`
 
 ---
-阅读完以上内容并熟悉了系统逻辑后，如果有关于组件更细节的设计疑惑，可以直接查阅 `src/core/downloader.py` 的正则分析机制代码或 `src/gui/playlist_window.py` 极完善的状态图控制。祝您顺利起飞！泡泡音挥手~ 🫧
+若要继续深入排查，请优先阅读：
+- `src/core/downloader.py`
+- `src/core/youtube_pot.py`
+- `src/gui/main_window.py`
+- `src/gui/playlist_window.py`
