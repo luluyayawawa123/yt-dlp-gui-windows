@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                            QPushButton, QLineEdit, QLabel, QMessageBox, QTextEdit, QHBoxLayout, QFileDialog, QComboBox, QCheckBox, QDialog,
                            QStyle, QSizePolicy, QApplication)
 from PyQt6.QtCore import Qt, QProcess, QProcessEnvironment, pyqtSignal
-from PyQt6.QtGui import QTextCursor, QIcon
+from PyQt6.QtGui import QIcon
 from .saved_urls_dialog import SavedURLsDialog
 from core.youtube_pot import prewarm_youtube_pot
 import os
@@ -41,6 +41,7 @@ class PlaylistWindow(QMainWindow):
         self._cancel_requested = False
         self._last_process_output = ""
         self._last_process_error = ""
+        self._output_auto_scroll = True
         self.youtube_prewarm_finished.connect(self._handle_youtube_prewarm_finished)
         self._reset_download_tracking()
         self.setup_ui()
@@ -288,6 +289,9 @@ class PlaylistWindow(QMainWindow):
             }
         """)
         layout.addWidget(self.output_text)
+        self.output_text.verticalScrollBar().valueChanged.connect(
+            self._handle_output_scroll_changed
+        )
         
         # 修改其他标签和按钮的字体样式
         self.setStyleSheet("""
@@ -631,8 +635,7 @@ class PlaylistWindow(QMainWindow):
             summary_lines.append("本次下载未发现失败条目。")
 
         summary_lines.append("==================================")
-        self.output_text.append("\n".join(summary_lines))
-        self.output_text.moveCursor(QTextCursor.MoveOperation.End)
+        self._append_output_log("\n".join(summary_lines))
     
     def start_download(self):
         """开始下载播放列表"""
@@ -822,8 +825,7 @@ class PlaylistWindow(QMainWindow):
             self._parse_stream_text(text, is_error=False)
             
             # 处理输出文本
-            self.output_text.append(text)
-            self.output_text.moveCursor(QTextCursor.MoveOperation.End)
+            self._append_output_log(text)
             
             # 更新进度信息
             if '[download]' in text:
@@ -876,12 +878,11 @@ class PlaylistWindow(QMainWindow):
             
             # 对用户显示更友好的错误信息
             if "Unable to download" in data:
-                self.output_text.append("⚠️ 无法下载此视频，已跳过")
+                self._append_output_log("⚠️ 无法下载此视频，已跳过")
             elif "Video unavailable" in data:
-                self.output_text.append("⚠️ 视频不可用，已跳过")
+                self._append_output_log("⚠️ 视频不可用，已跳过")
             # 其他错误信息不显示给用户
             
-            self.output_text.moveCursor(QTextCursor.MoveOperation.End)
         except Exception as e:
             # 错误只记录到日志，不显示给用户
             logging.error(f"处理错误输出时出错: {str(e)}", exc_info=True)
@@ -897,7 +898,7 @@ class PlaylistWindow(QMainWindow):
             retry_message = (
                 f"YouTube 初始化失败，正在自动重试（第 {current_attempt}/{total_attempts} 次尝试）..."
             )
-            self.output_text.append(retry_message)
+            self._append_output_log(retry_message)
             self.status_label.setText(retry_message)
             logging.warning("YouTube 下载首次失败，准备自动重试一次")
             self._youtube_retry_count += 1
@@ -1049,8 +1050,7 @@ class PlaylistWindow(QMainWindow):
         self._prewarm_in_progress = True
         self._set_download_button_cancel_mode()
         self.back_button.setEnabled(False)
-        self.output_text.append("正在初始化 YouTube 下载组件...")
-        self.output_text.moveCursor(QTextCursor.MoveOperation.End)
+        self._append_output_log("正在初始化 YouTube 下载组件...")
 
         threading.Thread(
             target=self._run_youtube_prewarm,
@@ -1077,8 +1077,7 @@ class PlaylistWindow(QMainWindow):
             self._set_download_button_idle()
             self.back_button.setEnabled(True)
             self.status_label.setText("初始化失败")
-            self.output_text.append(f"YouTube 下载组件初始化失败：{message}")
-            self.output_text.moveCursor(QTextCursor.MoveOperation.End)
+            self._append_output_log(f"YouTube 下载组件初始化失败：{message}")
             pending = self._pending_download_start
             self._pending_download_start = None
             logging.error(f"YouTube 组件初始化失败: {message}")
@@ -1116,6 +1115,22 @@ class PlaylistWindow(QMainWindow):
         self._set_download_button_cancel_mode()
         self.back_button.setEnabled(True)
         self.status_label.setText("下载中...")
+
+    def _handle_output_scroll_changed(self, _value):
+        """????????????????????"""
+        scrollbar = self.output_text.verticalScrollBar()
+        self._output_auto_scroll = scrollbar.value() >= scrollbar.maximum()
+
+    def _append_output_log(self, text):
+        """???????????????????"""
+        if not text:
+            return
+
+        should_scroll = self._output_auto_scroll
+        self.output_text.append(text)
+        if should_scroll:
+            scrollbar = self.output_text.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
 
     def _set_download_button_cancel_mode(self):
         """将主按钮切换为取消下载。"""

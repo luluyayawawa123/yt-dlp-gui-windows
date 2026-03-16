@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QTextEdit, QPushButton, 
                             QHBoxLayout, QApplication, QLabel)
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont, QTextCursor
+from PyQt6.QtGui import QFont
 
 
 class LogWindow(QDialog):
@@ -11,6 +11,7 @@ class LogWindow(QDialog):
         super().__init__(parent)
         self.task_id = task_id
         self.log_content = []  # 存储所有日志内容
+        self._auto_scroll_follow_bottom = True
         self.init_ui()
         
     def init_ui(self):
@@ -178,12 +179,16 @@ class LogWindow(QDialog):
 ===========================================
 
 """)
+
+        log_display.verticalScrollBar().valueChanged.connect(
+            self._handle_log_scroll_changed
+        )
         
         return log_display
         
     def create_button_bar(self):
         """创建底部按钮栏"""
-        from PyQt6.QtWidgets import QWidget, QCheckBox
+        from PyQt6.QtWidgets import QWidget
         
         button_bar = QWidget()
         button_bar.setFixedHeight(40)
@@ -192,29 +197,6 @@ class LogWindow(QDialog):
         layout = QHBoxLayout(button_bar)
         layout.setContentsMargins(8, 8, 8, 8)
         
-        # 添加自动滚动复选框
-        self.auto_scroll_checkbox = QCheckBox("自动滚动")
-        self.auto_scroll_checkbox.setChecked(True)  # 默认启用自动滚动
-        self.auto_scroll_checkbox.setStyleSheet("""
-            QCheckBox {
-                color: #33FF33;
-                font-family: "微软雅黑", "Microsoft YaHei", "黑体", "SimHei";
-                font-size: 10px;
-                background: transparent;
-            }
-            QCheckBox::indicator {
-                width: 16px;
-                height: 16px;
-            }
-            QCheckBox::indicator:unchecked {
-                border: 1px solid #33FF33;
-                background-color: #000000;
-            }
-            QCheckBox::indicator:checked {
-                border: 1px solid #33FF33;
-                background-color: #33FF33;
-            }
-        """)
         
         # 复制日志按钮
         copy_button = QPushButton("📋 复制日志到剪贴板")
@@ -240,7 +222,6 @@ class LogWindow(QDialog):
         """)
         copy_button.clicked.connect(self.copy_logs_to_clipboard)
         
-        layout.addWidget(self.auto_scroll_checkbox)
         layout.addStretch()
         layout.addWidget(copy_button)
         layout.addStretch()
@@ -269,23 +250,25 @@ class LogWindow(QDialog):
         timestamp = datetime.now().strftime("%H:%M:%S")
         formatted_text = f"[{timestamp}] {text}"
         
-        # 添加到显示区域
-        self.log_display.append(formatted_text)
-        
-        # 根据复选框状态决定是否自动滚动
-        if self.auto_scroll_checkbox.isChecked():
-            self.log_display.moveCursor(QTextCursor.MoveOperation.End)
+        self._append_to_display(formatted_text)
         
     def append_raw_log(self, text):
         """添加原生日志内容（不添加时间戳格式化）"""
         self.log_content.append(text)
-        
-        # 直接添加到显示区域，保持原生格式
+        self._append_to_display(text)
+
+    def _handle_log_scroll_changed(self, _value):
+        """用户离开底部时暂停自动滚动，回到底部后恢复。"""
+        scrollbar = self.log_display.verticalScrollBar()
+        self._auto_scroll_follow_bottom = scrollbar.value() >= scrollbar.maximum()
+
+    def _append_to_display(self, text):
+        """向日志窗口追加文本，并按需跟随到底部。"""
+        should_scroll = self._auto_scroll_follow_bottom
         self.log_display.append(text)
-        
-        # 根据复选框状态决定是否自动滚动
-        if self.auto_scroll_checkbox.isChecked():
-            self.log_display.moveCursor(QTextCursor.MoveOperation.End)
+        if should_scroll:
+            scrollbar = self.log_display.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
         
     def copy_logs_to_clipboard(self):
         """复制日志到剪贴板"""
