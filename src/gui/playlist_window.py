@@ -53,7 +53,7 @@ class PlaylistWindow(QMainWindow):
         self.setWindowTitle(f"播放列表/频道下载模式 v{version}")
         self.setMinimumSize(700, 500)
         self.setMaximumWidth(800)  # 限制最大宽度
-        self.resize(700, 500)
+        self.resize(700, 650)
         
         # 设置窗口图标
         self.set_window_icon()
@@ -204,11 +204,17 @@ class PlaylistWindow(QMainWindow):
         self.download_button = QPushButton("开始下载")
         self.download_button.clicked.connect(self.start_download)
         layout.addWidget(self.download_button)
-        
-        # 返回按钮
+
+        # 次级按钮行：返回
+        secondary_button_layout = QHBoxLayout()
+        secondary_button_layout.setContentsMargins(0, 0, 0, 0)
+        secondary_button_layout.setSpacing(8)
+
         self.back_button = QPushButton("返回普通下载")
         self.back_button.clicked.connect(self.back_to_main)
-        layout.addWidget(self.back_button)
+        secondary_button_layout.addWidget(self.back_button)
+
+        layout.addLayout(secondary_button_layout)
         
         # 状态显示区域
         status_layout = QVBoxLayout()  # 垂直布局
@@ -630,6 +636,10 @@ class PlaylistWindow(QMainWindow):
     
     def start_download(self):
         """开始下载播放列表"""
+        if self.download_button.text() == "取消下载":
+            self.cancel_download()
+            return
+
         url = self.url_combo.currentText().strip()
         # 如果是完整格式(标题 - URL)，提取URL部分
         if " - http" in url:
@@ -779,6 +789,23 @@ class PlaylistWindow(QMainWindow):
             logging.error(f"下载出错: {str(e)}", exc_info=True)
             self.status_label.setText(f"下载出错: {str(e)}")
             QMessageBox.critical(self, "错误", f"下载失败：{str(e)}")
+
+    def cancel_download(self):
+        """取消当前播放列表下载或预热。"""
+        self._cancel_requested = True
+
+        if self._prewarm_in_progress:
+            self._prewarm_in_progress = False
+            self._pending_download_start = None
+            self._active_download_start = None
+            self._set_header_status("")
+            self.status_label.setText("已取消")
+            self._set_download_button_idle()
+            self.back_button.setEnabled(True)
+            return
+
+        if self.process and self.process.state() == QProcess.ProcessState.Running:
+            self.process.kill()
     
     def handle_output(self):
         """处理输出"""
@@ -883,14 +910,17 @@ class PlaylistWindow(QMainWindow):
 
         self._finalize_pending_for_item(self.current_item_id, switched_to_next=False)
         self._append_download_summary()
-        self.download_button.setEnabled(True)
+        self._set_download_button_idle()
         self.back_button.setEnabled(True)
         self._active_download_start = None
         if exit_code == 0:
             self.status_label.setText("下载完成")
             logging.info("下载成功完成")
         else:
-            self.status_label.setText(f"下载失败 (退出码: {exit_code})")
+            if self._cancel_requested:
+                self.status_label.setText("已取消")
+            else:
+                self.status_label.setText(f"下载失败 (退出码: {exit_code})")
             logging.error(f"下载失败 - 退出码: {exit_code}")
 
     def _should_retry_youtube_failure(self, exit_code):
@@ -919,7 +949,7 @@ class PlaylistWindow(QMainWindow):
             self._pending_download_start = None
             self._active_download_start = None
             self._cancel_requested = True
-            self._set_header_status("")
+            self._set_download_button_idle()
             self.parent_window.show()
             self.hide()
             return
@@ -947,7 +977,7 @@ class PlaylistWindow(QMainWindow):
             self._pending_download_start = None
             self._active_download_start = None
             self._cancel_requested = True
-            self._set_header_status("")
+            self._set_download_button_idle()
             if self.parent_window:
                 self.parent_window.show()
             event.accept()
@@ -1017,9 +1047,10 @@ class PlaylistWindow(QMainWindow):
             return
 
         self._prewarm_in_progress = True
-        self.download_button.setEnabled(False)
+        self._set_download_button_cancel_mode()
         self.back_button.setEnabled(False)
-        self._set_header_status("正在初始化 YouTube 下载组件...")
+        self.output_text.append("正在初始化 YouTube 下载组件...")
+        self.output_text.moveCursor(QTextCursor.MoveOperation.End)
 
         threading.Thread(
             target=self._run_youtube_prewarm,
@@ -1038,16 +1069,16 @@ class PlaylistWindow(QMainWindow):
         self._prewarm_in_progress = False
 
         if not was_waiting or self._pending_download_start is None:
-            self.download_button.setEnabled(True)
+            self._set_download_button_idle()
             self.back_button.setEnabled(True)
-            self._set_header_status("")
             return
 
         if not success:
-            self.download_button.setEnabled(True)
+            self._set_download_button_idle()
             self.back_button.setEnabled(True)
             self.status_label.setText("初始化失败")
-            self._set_header_status("YouTube 组件初始化失败", is_error=True)
+            self.output_text.append(f"YouTube 下载组件初始化失败：{message}")
+            self.output_text.moveCursor(QTextCursor.MoveOperation.End)
             pending = self._pending_download_start
             self._pending_download_start = None
             logging.error(f"YouTube 组件初始化失败: {message}")
@@ -1057,7 +1088,6 @@ class PlaylistWindow(QMainWindow):
                 self.config.save_config()
             return
 
-        self._set_header_status("")
         self._start_pending_download_process()
 
     def _start_pending_download_process(self):
@@ -1069,7 +1099,6 @@ class PlaylistWindow(QMainWindow):
         self._active_download_start = pending
         self._pending_download_start = None
         self._start_active_download_process()
-        self.download_button.setEnabled(False)
         self.back_button.setEnabled(True)
         logging.info(f"开始下载播放列表: {pending['url']}")
 
@@ -1084,9 +1113,19 @@ class PlaylistWindow(QMainWindow):
 
         self._cancel_requested = False
         self.process.start(active["program"], active["args"])
-        self.download_button.setEnabled(False)
+        self._set_download_button_cancel_mode()
         self.back_button.setEnabled(True)
         self.status_label.setText("下载中...")
+
+    def _set_download_button_cancel_mode(self):
+        """将主按钮切换为取消下载。"""
+        self.download_button.setEnabled(True)
+        self.download_button.setText("取消下载")
+
+    def _set_download_button_idle(self):
+        """将主按钮恢复为开始下载。"""
+        self.download_button.setEnabled(True)
+        self.download_button.setText("开始下载")
 
     def save_current_url(self):
         """保存当前URL到收藏夹"""
