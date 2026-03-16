@@ -971,6 +971,10 @@ class MainWindow(QMainWindow):
                 task_widget.progress_label.setText(message)
                 task_widget.status_label.setText("🔄 处理中")
                 task_widget.status_label.setStyleSheet("color: #FF9800;")
+            elif "正在自动重试一次" in message:
+                task_widget.progress_label.setText(message)
+                task_widget.status_label.setText("处理中")
+                task_widget.status_label.setStyleSheet("color: #FF9800;")
             elif "下载完成" in message or "文件已存在" in message:
                 task_widget.progress_bar.setValue(100)
                 task_widget.progress_bar.setStyleSheet("""

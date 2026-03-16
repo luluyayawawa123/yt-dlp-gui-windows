@@ -88,6 +88,18 @@ class Downloader(QObject):
                 'default_format': 'best[ext=mp4]/best'  # 抖音也优先mp4
             }
         }
+
+    _YOUTUBE_RETRY_ERROR_MARKERS = (
+        "po token",
+        "bgutil",
+        "requested format is not available",
+        "failed to check script version",
+        "timeoutexpired",
+        "timed out",
+        "script-deno",
+        "gvs po token",
+        "generate_once.ts",
+    )
         
     def reset_state(self):
         """重置下载器状态"""
@@ -454,35 +466,12 @@ class Downloader(QObject):
             # 记录完整命令（用于调试）
             self.config.log(f"执行命令: {' '.join(args)}", logging.DEBUG)
             
-            # 创建新进程
-            process = QProcess()
-            process.setProcessEnvironment(self.env)
-            process.setWorkingDirectory(output_path)
-            
-            # 设置进程属性
-            process.setProperty("url", url)
-            process.setProperty("task_id", task_id)
-            process.setProperty("title", "未知视频")
-            process.setProperty("title_set", False)  # 初始化标题设置状态
-            
-            # 修改这里：使用 finished 信号来处理下载完成
-            process.finished.connect(
-                lambda exit_code, exit_status: self._process_finished(exit_code, exit_status)
+            process = self._create_download_process(
+                task_id=task_id,
+                url=url,
+                output_path=output_path,
+                args=args,
             )
-            
-            # 修改输出处理的连接方式
-            def handle_stdout():
-                data = process.readAllStandardOutput()
-                self._handle_process_output(process, data)
-                
-            def handle_stderr():
-                data = process.readAllStandardError()
-                self._handle_process_output(process, data)
-                
-            process.readyReadStandardOutput.connect(handle_stdout)
-            process.readyReadStandardError.connect(handle_stderr)
-            
-            # 启动进程
             process.start(args[0], args[1:])
             self.processes.append(process)
             return True
@@ -497,8 +486,91 @@ class Downloader(QObject):
         """取消所有正在进行的下载"""
         for process in self.processes:
             if process.state() == QProcess.ProcessState.Running:
+                process.setProperty("cancel_requested", True)
                 process.kill()  # 强制结束进程
         self.processes.clear()  # 清空进程列表
+
+    def _create_download_process(self, task_id, url, output_path, args):
+        """创建并配置下载进程，便于失败后原参数重试。"""
+        process = QProcess()
+        process.setProcessEnvironment(self.env)
+        process.setWorkingDirectory(output_path)
+
+        process.setProperty("url", url)
+        process.setProperty("task_id", task_id)
+        process.setProperty("title", "未知视频")
+        process.setProperty("title_set", False)
+        process.setProperty("retry_count", 0)
+        process.setProperty("saw_download_progress", False)
+        process.setProperty("cancel_requested", False)
+        process.setProperty("command_args", args)
+        process.setProperty("working_directory", output_path)
+
+        process.finished.connect(
+            lambda exit_code, exit_status: self._process_finished(exit_code, exit_status)
+        )
+
+        def handle_stdout():
+            data = process.readAllStandardOutput()
+            self._handle_process_output(process, data)
+
+        def handle_stderr():
+            data = process.readAllStandardError()
+            self._handle_process_output(process, data)
+
+        process.readyReadStandardOutput.connect(handle_stdout)
+        process.readyReadStandardError.connect(handle_stderr)
+        return process
+
+    def _should_retry_youtube_failure(self, process, output, error):
+        """仅对首次、无实质进度的 YouTube 初始化类失败补一次重试。"""
+        if process.property("cancel_requested"):
+            return False
+
+        platform = self.detect_platform(process.property("url") or "")
+        if platform != "youtube":
+            return False
+
+        retry_count = int(process.property("retry_count") or 0)
+        if retry_count >= 1:
+            return False
+
+        if process.property("saw_download_progress"):
+            return False
+
+        combined = f"{output}\n{error}".lower()
+        return any(marker in combined for marker in self._YOUTUBE_RETRY_ERROR_MARKERS)
+
+    def _restart_process_once(self, process):
+        """使用原参数自动补一次重试。"""
+        args = process.property("command_args")
+        if not args:
+            return False
+
+        retry_count = int(process.property("retry_count") or 0) + 1
+        task_id = process.property("task_id")
+        title = process.property("title") or "未知视频"
+
+        new_process = self._create_download_process(
+            task_id=task_id,
+            url=process.property("url"),
+            output_path=process.property("working_directory"),
+            args=args,
+        )
+        new_process.setProperty("retry_count", retry_count)
+        new_process.setProperty("title", title)
+        new_process.setProperty("title_set", bool(process.property("title_set")))
+
+        if process in self.processes:
+            index = self.processes.index(process)
+            self.processes[index] = new_process
+        else:
+            self.processes.append(new_process)
+
+        self.output_received.emit(task_id, "YouTube 首次初始化失败，正在自动重试一次...")
+        process.deleteLater()
+        new_process.start(args[0], args[1:])
+        return True
         
     def _handle_process_output(self, process, data):
         """处理下载进程的输出"""
@@ -627,6 +699,7 @@ class Downloader(QObject):
                             size = match.group(2)
                             speed = match.group(3)
                             eta = match.group(4)
+                            process.setProperty("saw_download_progress", True)
                             
                             if float(percent) >= 100:
                                 self.output_received.emit(task_id, "下载完成")
@@ -838,6 +911,10 @@ class Downloader(QObject):
             
             # 检查是否成功
             success = exit_code == 0
+
+            if not success and self._should_retry_youtube_failure(process, output, error):
+                self._restart_process_once(process)
+                return
             
             # 发送完成信号
             if success:
@@ -849,6 +926,7 @@ class Downloader(QObject):
             # 从进程列表中移除
             if process in self.processes:
                 self.processes.remove(process)
+            process.deleteLater()
             
         except Exception as e:
             self.config.log(f"处理进程完成时出错: {str(e)}", logging.ERROR)

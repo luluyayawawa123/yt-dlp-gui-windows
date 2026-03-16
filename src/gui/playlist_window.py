@@ -15,6 +15,17 @@ import threading
 
 class PlaylistWindow(QMainWindow):
     youtube_prewarm_finished = pyqtSignal(bool, str)
+    _YOUTUBE_RETRY_ERROR_MARKERS = (
+        "po token",
+        "bgutil",
+        "requested format is not available",
+        "failed to check script version",
+        "timeoutexpired",
+        "timed out",
+        "script-deno",
+        "gvs po token",
+        "generate_once.ts",
+    )
 
     def __init__(self, config, parent=None):
         super().__init__()
@@ -22,7 +33,13 @@ class PlaylistWindow(QMainWindow):
         self.parent_window = parent
         self.process = None
         self._pending_download_start = None
+        self._active_download_start = None
         self._prewarm_in_progress = False
+        self._youtube_retry_count = 0
+        self._saw_download_progress = False
+        self._cancel_requested = False
+        self._last_process_output = ""
+        self._last_process_error = ""
         self.youtube_prewarm_finished.connect(self._handle_youtube_prewarm_finished)
         self._reset_download_tracking()
         self.setup_ui()
@@ -623,6 +640,11 @@ class PlaylistWindow(QMainWindow):
             
         try:
             self._reset_download_tracking()
+            self._youtube_retry_count = 0
+            self._saw_download_progress = False
+            self._cancel_requested = False
+            self._last_process_output = ""
+            self._last_process_error = ""
 
             # 获取下载路径并规范化
             output_path = os.path.normpath(self.location_input.text())
@@ -768,6 +790,7 @@ class PlaylistWindow(QMainWindow):
             
             # 记录调试信息
             logging.debug(f"Raw output: {text}")
+            self._last_process_output += text
             self._parse_stream_text(text, is_error=False)
             
             # 处理输出文本
@@ -796,6 +819,7 @@ class PlaylistWindow(QMainWindow):
                 # 处理单个视频的下载进度
                 elif '%' in text and 'of' in text:
                     try:
+                        self._saw_download_progress = True
                         # 兼容普通格式和 SABR 格式（带流编号前缀如 "2:"）
                         progress_match = re.search(
                             r'\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+\S+)\s+at\s+([\d.]+\S+)\s+ETA\s+(\S+)',
@@ -819,6 +843,7 @@ class PlaylistWindow(QMainWindow):
             data = self.process.readAllStandardError().data().decode('utf-8', errors='ignore')
             # 错误信息记录到日志
             logging.error(f"下载错误: {data}")
+            self._last_process_error += data
             self._parse_stream_text(data, is_error=True)
             
             # 对用户显示更友好的错误信息
@@ -837,22 +862,57 @@ class PlaylistWindow(QMainWindow):
         """下载完成处理"""
         logging.info(f"下载进程结束 - 退出码: {exit_code}, 状态: {exit_status}")
         self._flush_stream_buffers()
+
+        if self._should_retry_youtube_failure(exit_code):
+            self.output_text.append("YouTube 首次初始化失败，正在自动重试一次...")
+            self.status_label.setText("YouTube 首次初始化失败，正在自动重试一次...")
+            logging.warning("YouTube 下载首次失败，准备自动重试一次")
+            self._youtube_retry_count += 1
+            self._reset_download_tracking()
+            self._saw_download_progress = False
+            self._last_process_output = ""
+            self._last_process_error = ""
+            self._start_active_download_process()
+            return
+
         self._finalize_pending_for_item(self.current_item_id, switched_to_next=False)
         self._append_download_summary()
         self.download_button.setEnabled(True)
         self.back_button.setEnabled(True)
+        self._active_download_start = None
         if exit_code == 0:
             self.status_label.setText("下载完成")
             logging.info("下载成功完成")
         else:
             self.status_label.setText(f"下载失败 (退出码: {exit_code})")
             logging.error(f"下载失败 - 退出码: {exit_code}")
+
+    def _should_retry_youtube_failure(self, exit_code):
+        """仅对 YouTube 首次初始化类失败自动补一次重试。"""
+        if exit_code == 0 or self._cancel_requested:
+            return False
+
+        if self._youtube_retry_count >= 1:
+            return False
+
+        active = self._active_download_start or {}
+        url = (active.get("url") or "").lower()
+        if "youtube.com" not in url and "youtu.be" not in url:
+            return False
+
+        if self._saw_download_progress:
+            return False
+
+        combined = f"{self._last_process_output}\n{self._last_process_error}".lower()
+        return any(marker in combined for marker in self._YOUTUBE_RETRY_ERROR_MARKERS)
     
     def back_to_main(self):
         """返回主窗口"""
         if self._prewarm_in_progress:
             self._prewarm_in_progress = False
             self._pending_download_start = None
+            self._active_download_start = None
+            self._cancel_requested = True
             self._set_header_status("")
             self.parent_window.show()
             self.hide()
@@ -867,6 +927,7 @@ class PlaylistWindow(QMainWindow):
             )
             if reply == QMessageBox.StandardButton.No:
                 return
+            self._cancel_requested = True
             self.process.kill()
         
         # 直接显示主窗口并关闭当前窗口，不触发closeEvent
@@ -878,6 +939,8 @@ class PlaylistWindow(QMainWindow):
         if self._prewarm_in_progress:
             self._prewarm_in_progress = False
             self._pending_download_start = None
+            self._active_download_start = None
+            self._cancel_requested = True
             self._set_header_status("")
             if self.parent_window:
                 self.parent_window.show()
@@ -895,6 +958,7 @@ class PlaylistWindow(QMainWindow):
                 event.ignore()
                 return
             
+            self._cancel_requested = True
             self.process.kill()
         
         # 如果用户确认关闭或没有正在进行的下载，则关闭窗口
@@ -996,15 +1060,27 @@ class PlaylistWindow(QMainWindow):
         if not pending:
             return
 
+        self._active_download_start = pending
         self._pending_download_start = None
-        self.process.start(pending["program"], pending["args"])
+        self._start_active_download_process()
         self.download_button.setEnabled(False)
         self.back_button.setEnabled(True)
-        self.status_label.setText("下载中...")
         logging.info(f"开始下载播放列表: {pending['url']}")
 
         self.config.config['download_path'] = pending["output_path"]
         self.config.save_config()
+
+    def _start_active_download_process(self):
+        """按当前活动请求启动或重启播放列表下载进程。"""
+        active = self._active_download_start
+        if not active:
+            return
+
+        self._cancel_requested = False
+        self.process.start(active["program"], active["args"])
+        self.download_button.setEnabled(False)
+        self.back_button.setEnabled(True)
+        self.status_label.setText("下载中...")
 
     def save_current_url(self):
         """保存当前URL到收藏夹"""
