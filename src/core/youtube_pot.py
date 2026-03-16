@@ -1,10 +1,12 @@
 import os
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 _PREWARM_TIMEOUT_SECONDS = 60
-_prewarmed_server_dirs = set()
+_PREWARM_VALID_SECONDS = 3600
+_prewarmed_server_dirs = {}
 _prewarm_lock = threading.Lock()
 
 
@@ -53,8 +55,13 @@ def prewarm_youtube_pot(bin_dir: Path) -> tuple[bool, str]:
         return False, f"未找到 PO Token 依赖目录：{node_modules_dir}"
 
     server_key = os.path.normcase(str(server_dir.resolve()))
+    now = time.monotonic()
     with _prewarm_lock:
-        if server_key in _prewarmed_server_dirs:
+        last_prewarm_time = _prewarmed_server_dirs.get(server_key)
+        if (
+            last_prewarm_time is not None
+            and now - last_prewarm_time < _PREWARM_VALID_SECONDS
+        ):
             return True, ""
 
     cache_dir = _get_cache_dir()
@@ -102,6 +109,6 @@ def prewarm_youtube_pot(bin_dir: Path) -> tuple[bool, str]:
         return False, f"YouTube 下载组件初始化失败，返回码：{result.returncode}"
 
     with _prewarm_lock:
-        _prewarmed_server_dirs.add(server_key)
+        _prewarmed_server_dirs[server_key] = time.monotonic()
 
     return True, ""

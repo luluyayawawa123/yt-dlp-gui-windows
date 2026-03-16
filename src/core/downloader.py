@@ -100,6 +100,7 @@ class Downloader(QObject):
         "gvs po token",
         "generate_once.ts",
     )
+    _MAX_YOUTUBE_RECOVERY_RETRIES = 2
         
     def reset_state(self):
         """重置下载器状态"""
@@ -505,6 +506,8 @@ class Downloader(QObject):
         process.setProperty("cancel_requested", False)
         process.setProperty("command_args", args)
         process.setProperty("working_directory", output_path)
+        process.setProperty("stdout_buffer", "")
+        process.setProperty("stderr_buffer", "")
 
         process.finished.connect(
             lambda exit_code, exit_status: self._process_finished(exit_code, exit_status)
@@ -512,11 +515,11 @@ class Downloader(QObject):
 
         def handle_stdout():
             data = process.readAllStandardOutput()
-            self._handle_process_output(process, data)
+            self._handle_process_output(process, data, is_error=False)
 
         def handle_stderr():
             data = process.readAllStandardError()
-            self._handle_process_output(process, data)
+            self._handle_process_output(process, data, is_error=True)
 
         process.readyReadStandardOutput.connect(handle_stdout)
         process.readyReadStandardError.connect(handle_stderr)
@@ -532,7 +535,7 @@ class Downloader(QObject):
             return False
 
         retry_count = int(process.property("retry_count") or 0)
-        if retry_count >= 1:
+        if retry_count >= self._MAX_YOUTUBE_RECOVERY_RETRIES:
             return False
 
         if process.property("saw_download_progress"):
@@ -541,8 +544,8 @@ class Downloader(QObject):
         combined = f"{output}\n{error}".lower()
         return any(marker in combined for marker in self._YOUTUBE_RETRY_ERROR_MARKERS)
 
-    def _restart_process_once(self, process):
-        """使用原参数自动补一次重试。"""
+    def _restart_process(self, process):
+        """使用原参数自动补救重试。"""
         args = process.property("command_args")
         if not args:
             return False
@@ -567,12 +570,16 @@ class Downloader(QObject):
         else:
             self.processes.append(new_process)
 
-        self.output_received.emit(task_id, "YouTube 首次初始化失败，正在自动重试一次...")
+        total_attempts = self._MAX_YOUTUBE_RECOVERY_RETRIES + 1
+        self.output_received.emit(
+            task_id,
+            f"YouTube 初始化失败，正在自动重试（第 {retry_count + 1}/{total_attempts} 次尝试）...",
+        )
         process.deleteLater()
         new_process.start(args[0], args[1:])
         return True
         
-    def _handle_process_output(self, process, data):
+    def _handle_process_output(self, process, data, is_error=False):
         """处理下载进程的输出"""
         try:
             # 改进编码处理逻辑
@@ -593,6 +600,10 @@ class Downloader(QObject):
         
             if not text:
                 return
+
+            buffer_key = "stderr_buffer" if is_error else "stdout_buffer"
+            existing = process.property(buffer_key) or ""
+            process.setProperty(buffer_key, existing + text)
             
             task_id = process.property("task_id")
             
@@ -864,9 +875,11 @@ class Downloader(QObject):
             task_id = process.property("task_id")
             url = process.property("url")
             
-            # 获取输出内容
-            output = process.readAllStandardOutput().data().decode('utf-8', errors='ignore')
-            error = process.readAllStandardError().data().decode('utf-8', errors='ignore')
+            # 获取剩余输出并合并已缓存日志
+            remaining_output = process.readAllStandardOutput().data().decode('utf-8', errors='ignore')
+            remaining_error = process.readAllStandardError().data().decode('utf-8', errors='ignore')
+            output = (process.property("stdout_buffer") or "") + remaining_output
+            error = (process.property("stderr_buffer") or "") + remaining_error
             
             # 获取视频标题
             title = process.property("title") or url
@@ -913,7 +926,7 @@ class Downloader(QObject):
             success = exit_code == 0
 
             if not success and self._should_retry_youtube_failure(process, output, error):
-                self._restart_process_once(process)
+                self._restart_process(process)
                 return
             
             # 发送完成信号

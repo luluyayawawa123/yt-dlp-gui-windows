@@ -26,6 +26,7 @@ class PlaylistWindow(QMainWindow):
         "gvs po token",
         "generate_once.ts",
     )
+    _MAX_YOUTUBE_RECOVERY_RETRIES = 2
 
     def __init__(self, config, parent=None):
         super().__init__()
@@ -864,8 +865,13 @@ class PlaylistWindow(QMainWindow):
         self._flush_stream_buffers()
 
         if self._should_retry_youtube_failure(exit_code):
-            self.output_text.append("YouTube 首次初始化失败，正在自动重试一次...")
-            self.status_label.setText("YouTube 首次初始化失败，正在自动重试一次...")
+            current_attempt = self._youtube_retry_count + 2
+            total_attempts = self._MAX_YOUTUBE_RECOVERY_RETRIES + 1
+            retry_message = (
+                f"YouTube 初始化失败，正在自动重试（第 {current_attempt}/{total_attempts} 次尝试）..."
+            )
+            self.output_text.append(retry_message)
+            self.status_label.setText(retry_message)
             logging.warning("YouTube 下载首次失败，准备自动重试一次")
             self._youtube_retry_count += 1
             self._reset_download_tracking()
@@ -892,7 +898,7 @@ class PlaylistWindow(QMainWindow):
         if exit_code == 0 or self._cancel_requested:
             return False
 
-        if self._youtube_retry_count >= 1:
+        if self._youtube_retry_count >= self._MAX_YOUTUBE_RECOVERY_RETRIES:
             return False
 
         active = self._active_download_start or {}

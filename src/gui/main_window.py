@@ -713,6 +713,24 @@ class MainWindow(QMainWindow):
         """)
         open_button.hide()
         status_layout.addWidget(open_button)
+
+        retry_button = QPushButton("下载重试")
+        retry_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        retry_button.setStyleSheet("""
+            QPushButton {
+                border: none;
+                color: #FF9800;
+                font-size: 11px;
+                padding: 2px 8px;
+                background: transparent;
+            }
+            QPushButton:hover {
+                color: #F57C00;
+                text-decoration: underline;
+            }
+        """)
+        retry_button.hide()
+        status_layout.addWidget(retry_button)
         
         # 状态标签
         status_label = QLabel("⏳ 准备中")
@@ -746,12 +764,18 @@ class MainWindow(QMainWindow):
         task_widget.progress_label = progress_label
         task_widget.status_label = status_label
         task_widget.open_button = open_button
+        task_widget.retry_button = retry_button
         task_widget.log_button = log_button
         task_widget.video_path = None  # 用于保存视频路径
         task_widget.progress_bar = progress_bar
+        task_widget.source_url = url
+        task_widget.download_path = None
+        task_widget.format_options = None
+        task_widget.browser = None
         
         # 连接日志按钮信号
         log_button.clicked.connect(lambda: self.show_task_log(task_id))
+        retry_button.clicked.connect(lambda: self._retry_failed_task(task_id))
         
         # 将新任务添加到顶部
         self.tasks_layout.insertWidget(0, task_widget)
@@ -840,36 +864,7 @@ class MainWindow(QMainWindow):
                 'subtitlesformat': 'srt'
             })
         
-        # 设置总任务数
-        self.total_urls = len([url for url in urls if url.strip()])
-        self.completed_urls = 0  # 重置完成计数
-        
-        # 禁用控件
-        self._disable_controls()
-        
-        # 设置环境变量，强制使用 UTF-8
-        env = QProcess.systemEnvironment()
-        env.append("PYTHONIOENCODING=utf-8")
-        env.append("PYTHONUTF8=1")
-        env.append("LANG=zh_CN.UTF-8")  # 添加语言环境设置
-        self.downloader.set_environment(env)
-        
-        # 保存当前路径到配置（确保每次下载都更新配置）
-        self.config.config['download_path'] = output_path
-        self.config.save_config()
-
-        self._pending_download_request = {
-            'urls': urls,
-            'output_path': output_path,
-            'format_options': format_options,
-            'browser': browser,
-        }
-
-        if self._requires_youtube_prewarm(urls):
-            self._start_youtube_prewarm()
-            return
-
-        self._launch_pending_downloads()
+        self._queue_download_request(urls, output_path, format_options, browser)
         
     def cancel_download(self):
         """取消下载"""
@@ -938,6 +933,7 @@ class MainWindow(QMainWindow):
                 """)
                 task_widget.progress_label.setText("准备下载...")
                 task_widget.progress_bar.setValue(0)
+                task_widget.retry_button.hide()
                 
                 # 设置打开文件夹按钮点击事件
                 task_widget.open_button.clicked.connect(
@@ -957,6 +953,7 @@ class MainWindow(QMainWindow):
                     line-height: 1.1;
                     padding: 2px 8px;
                 """)
+                task_widget.retry_button.hide()
             elif "正在合并" in message:
                 task_widget.progress_bar.setValue(100)
                 task_widget.progress_bar.setStyleSheet("""
@@ -971,10 +968,12 @@ class MainWindow(QMainWindow):
                 task_widget.progress_label.setText(message)
                 task_widget.status_label.setText("🔄 处理中")
                 task_widget.status_label.setStyleSheet("color: #FF9800;")
-            elif "正在自动重试一次" in message:
+                task_widget.retry_button.hide()
+            elif "正在自动重试" in message:
                 task_widget.progress_label.setText(message)
                 task_widget.status_label.setText("处理中")
                 task_widget.status_label.setStyleSheet("color: #FF9800;")
+                task_widget.retry_button.hide()
             elif "下载完成" in message or "文件已存在" in message:
                 task_widget.progress_bar.setValue(100)
                 task_widget.progress_bar.setStyleSheet("""
@@ -994,6 +993,7 @@ class MainWindow(QMainWindow):
                     line-height: 1.1;
                     padding: 2px 8px;
                 """)
+                task_widget.retry_button.hide()
 
     def download_finished(self, success, message, title, task_id):
         """处理下载完成事件"""
@@ -1011,6 +1011,7 @@ class MainWindow(QMainWindow):
                 padding: 2px 8px;
             """)
             task_widget.open_button.show()  # 确保显示打开文件夹按钮
+            task_widget.retry_button.hide()
             task_widget.open_button.setStyleSheet("""
                 QPushButton {
                     border: none;
@@ -1033,6 +1034,7 @@ class MainWindow(QMainWindow):
                 padding: 2px 8px;
             """)
             task_widget.open_button.hide()  # 失败时隐藏按钮
+            task_widget.retry_button.show()
         
         self.completed_urls += 1
         
@@ -1175,7 +1177,10 @@ class MainWindow(QMainWindow):
 
             try:
                 task_id = f"Task-{len(self.download_tasks)+1}"
-                self.create_download_task_widget(url, task_id)
+                task_widget = self.create_download_task_widget(url, task_id)
+                task_widget.download_path = request['output_path']
+                task_widget.format_options = dict(request['format_options'])
+                task_widget.browser = request['browser']
 
                 if not self.downloader.start_download(
                     url,
@@ -1205,6 +1210,57 @@ class MainWindow(QMainWindow):
             self._enable_controls()
 
         return success
+
+    def _queue_download_request(self, urls, output_path, format_options, browser):
+        """准备并启动一组下载请求，供普通下载和手动重试共用。"""
+        self.total_urls = len([url for url in urls if url.strip()])
+        self.completed_urls = 0
+
+        self._disable_controls()
+
+        env = QProcess.systemEnvironment()
+        env.append("PYTHONIOENCODING=utf-8")
+        env.append("PYTHONUTF8=1")
+        env.append("LANG=zh_CN.UTF-8")
+        self.downloader.set_environment(env)
+
+        self.config.config['download_path'] = output_path
+        self.config.save_config()
+
+        self._pending_download_request = {
+            'urls': urls,
+            'output_path': output_path,
+            'format_options': format_options,
+            'browser': browser,
+        }
+
+        if self._requires_youtube_prewarm(urls):
+            self._start_youtube_prewarm()
+            return
+
+        self._launch_pending_downloads()
+
+    def _retry_failed_task(self, task_id):
+        """重试失败任务，保持任务卡片现有高度不变。"""
+        task_widget = self.download_tasks.get(task_id)
+        if not task_widget:
+            return
+
+        if self.downloader.processes or self._prewarm_in_progress:
+            QMessageBox.information(self, "请稍候", "当前仍有下载任务在运行，请稍后再试。")
+            return
+
+        if not task_widget.source_url or not task_widget.download_path:
+            QMessageBox.warning(self, "重试失败", "未找到该任务的重试参数。")
+            return
+
+        task_widget.retry_button.hide()
+        self._queue_download_request(
+            [task_widget.source_url],
+            task_widget.download_path,
+            dict(task_widget.format_options or {}),
+            task_widget.browser,
+        )
 
     def clear_download_history(self):
         """清空下载历史"""
