@@ -241,13 +241,14 @@ class LogWindow(QDialog):
             y = (screen.height() - self.height()) // 2
             self.move(x, y)
             
-    def append_log(self, text):
+    def append_log(self, text, timestamp=None):
         """添加日志内容"""
         self.log_content.append(text)
         
         # 格式化日志文本（添加时间戳和前缀）
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%H:%M:%S")
+        if timestamp is None:
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%H:%M:%S")
         formatted_text = f"[{timestamp}] {text}"
         
         self._append_to_display(formatted_text)
@@ -256,6 +257,17 @@ class LogWindow(QDialog):
         """添加原生日志内容（不添加时间戳格式化）"""
         self.log_content.append(text)
         self._append_to_display(text)
+
+    def load_log_history(self, entries):
+        """加载任务已有的完整日志历史。"""
+        for entry in entries:
+            if entry.get("kind") == "raw":
+                self.append_raw_log(entry.get("text", ""))
+            else:
+                self.append_log(
+                    entry.get("text", ""),
+                    timestamp=entry.get("timestamp"),
+                )
 
     def _handle_log_scroll_changed(self, _value):
         """用户离开底部时暂停自动滚动，回到底部后恢复。"""

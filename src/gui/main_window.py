@@ -88,6 +88,7 @@ class MainWindow(QMainWindow):
         self.completed_urls = 0
         self.download_tasks = {}
         self.log_windows = {}  # 存储每个任务的日志窗口
+        self.task_log_history = {}  # 存储每个任务的完整日志历史
         self._pending_download_request = None
         self._prewarm_in_progress = False
         self.youtube_prewarm_finished.connect(self._handle_youtube_prewarm_finished)
@@ -906,13 +907,24 @@ class MainWindow(QMainWindow):
         if message.startswith("[RAW_LOG]"):
             # 这是原生日志信息，只发送到日志窗口，不更新UI进度
             raw_log = message[9:]  # 移除前缀
+            self.task_log_history.setdefault(task_id, []).append({
+                'kind': 'raw',
+                'text': raw_log,
+            })
             if task_id in self.log_windows:
                 self.log_windows[task_id].append_raw_log(raw_log)
             return  # 不继续处理原生日志（原生日志不包含UI更新信息）
             
         # 同时将普通消息发送到日志窗口
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.task_log_history.setdefault(task_id, []).append({
+            'kind': 'message',
+            'text': message,
+            'timestamp': timestamp,
+        })
         if task_id in self.log_windows:
-            self.log_windows[task_id].append_log(message)
+            self.log_windows[task_id].append_log(message, timestamp=timestamp)
             
         if task_id in self.download_tasks:
             task_widget = self.download_tasks[task_id]
@@ -1423,6 +1435,7 @@ class MainWindow(QMainWindow):
         # 创建新的日志窗口
         log_window = LogWindow(task_id, self)
         self.log_windows[task_id] = log_window
+        log_window.load_log_history(self.task_log_history.get(task_id, []))
         
         # 连接窗口关闭信号，清理引用
         log_window.finished.connect(lambda: self._cleanup_log_window(task_id))
