@@ -41,20 +41,19 @@ class Downloader(QObject):
         self.env = QProcessEnvironment.systemEnvironment()
         self.env.insert("PATH", str(self.bin_dir) + os.pathsep + os.environ.get("PATH", ""))
         
-        # bgutil PO Token 脚本路径（SABR 协议需要 PO Token 才能获取具体分辨率）
+        # 保留 bgutil PO Token 脚本路径，方便未来重新适配需要 Token 的客户端。
         self.pot_server_home = self.bin_dir / "bgutil-ytdlp-pot-provider" / "server"
         
         # 定义支持的视频平台配置
         self.platform_configs = {
             'youtube': {
                 'domains': ['youtube.com', 'youtu.be', 'm.youtube.com'],
-                'require_cookies': True,
-                'default_browser': 'firefox',
+                'require_cookies': False,
+                'default_browser': None,
+                'requires_pot_prewarm': False,
                 'special_args': [
                     '--extractor-args',
-                    f'youtubepot-bgutilscript:server_home={self.pot_server_home}',
-                    '--extractor-args',
-                    'youtube:player_client=web_creator'
+                    'youtube:player_client=android_vr'
                 ],
                 'default_format': None  # 使用用户选择的格式
             },

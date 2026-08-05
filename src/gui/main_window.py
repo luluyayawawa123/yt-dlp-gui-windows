@@ -1128,7 +1128,11 @@ class MainWindow(QMainWindow):
             self._position_header_status_label()
 
     def _requires_youtube_prewarm(self, urls):
-        """判断本次任务是否包含 YouTube 下载。"""
+        """判断当前 YouTube 客户端是否需要预热 PO Token 组件。"""
+        youtube_config = self.downloader.get_platform_config('youtube')
+        if not youtube_config.get('requires_pot_prewarm', False):
+            return False
+
         for url in urls:
             url = url.strip()
             if url and self.downloader.detect_platform(url) == 'youtube':
