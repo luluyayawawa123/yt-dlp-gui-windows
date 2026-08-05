@@ -1,0 +1,89 @@
+mweb 客户端问题跟踪记录
+========================
+
+记录日期：2026-08-05
+测试视频：https://www.youtube.com/watch?v=CpGiJ3VRjps
+测试环境：Windows 10、yt-dlp 2026.07.04、bgutil-ytdlp-pot-provider 1.3.1、Deno 2.5.6、Firefox Cookies
+
+一、问题现象
+------------
+
+使用以下组合下载该视频时：
+
+- YouTube 客户端：mweb
+- 登录方式：Firefox Cookies
+- PO Token：bgutil script-deno
+- 视频格式：401（MP4、AV1、3840×2160）
+- 音频格式：251-7（Opus）
+
+yt-dlp 能正常提取视频信息、生成绑定视频 ID 的 GVS PO Token，并正确选择 4K 格式 401+251-7；但视频流下载到约 5% 后会收到 HTTP 403 Forbidden。重新启动 yt-dlp、重新生成 PO Token 和下载地址后，只能短暂续传，随后再次出现 403。
+
+二、验证结果
+------------
+
+对新生成的 mweb 格式 401 地址执行小范围 HTTP Range 测试：
+
+- 0 至 1MB：HTTP 206，成功
+- 约 40.9MB：HTTP 206，成功
+- 约 52MB：HTTP 403，失败
+
+倒序测试仍然得到相同结果，说明问题与格式 401 的特定下载区间有关，不是同一地址请求次数过多导致。
+
+对照测试：
+
+- mweb 格式 313（WebM、VP9、3840×2160）在约 52MB 位置返回 HTTP 206。
+- android_vr 格式 401 连续读取前 64MB 成功。
+- web_creator + Firefox Cookies + PO Token 的格式 401 连续读取前 64MB 成功。
+- web_creator 格式 401 在约 419MB、734MB、814MB 位置均返回 HTTP 206。
+
+当前判断：问题集中在该视频的 mweb 客户端格式 401 下载地址，不是画质选择规则、文件名、Firefox Cookies、普通网络中断或 PO Token 未生成造成的。
+
+三、客户端现状与当前方案
+------------------------
+
+1. mweb
+
+- 能识别并选择 4K，但当前测试视频的 MP4 4K 格式 401 会在下载中途稳定出现 HTTP 403。
+- 依赖 GVS PO Token；当前软件通过 Firefox Cookies、bgutil provider 和 Deno 提供。
+- 当前不适合作为主要下载客户端，后续继续观察 yt-dlp 与 YouTube 的变化。
+
+2. web_creator
+
+- 能取得 4K，测试视频的格式 401 已通过多个文件区间读取验证。
+- 需要账号 Cookies 和 GVS PO Token，依赖 bgutil provider 与 Deno。
+- 单视频模式目前下载稳定；但在播放列表的部分视频上会反复生成 PO Token 并长时间卡住。
+
+3. android_vr
+
+- 已取得测试视频的 401+251 格式，分辨率为 3840×2160；格式 401 连续读取前 64MB 成功。
+- 当前不需要 PO Token；下载公开视频时不需要 Cookies，也不依赖 bgutil provider 和 Deno。
+- 目标播放列表前三条均能快速解析，包含 web_creator 卡住的视频。
+- 限制：不支持“面向儿童”的视频；需要登录权限的内容不适合作为主要使用场景。
+- 当前结论：对于公开普通视频、公开播放列表和 4K 下载，android_vr 暂时是本机环境中最简单、表现最好的客户端。
+
+当前软件配置：
+
+- 单视频模式：固定 web_creator，保留 Cookies、PO Token、bgutil 和 Deno 流程。
+- 播放列表模式：固定 android_vr，运行时跳过上述依赖。
+- mweb/web_creator 所需组件和代码继续保留，将来切换客户端时可自动重新启用。
+
+四、后续观察项目
+----------------
+
+1. 关注 yt-dlp 官方 PO Token 指南是否调整通用推荐客户端。
+2. 关注 yt-dlp 官方仓库中 mweb、格式 401、HTTP Range 和中途 403 相关 Issue。
+3. 更新 yt-dlp、bgutil-ytdlp-pot-provider 或 Deno 后，重新测试本记录中的视频。
+4. 重新验证 mweb 格式 401 能否完整下载，并对 android_vr 执行一次完整 4K 端到端验证。
+5. 若 mweb 恢复稳定，再评估是否切回官方通用推荐的 mweb 方案；未经完整传输验证，不应仅凭格式列表或模拟下载判断修复成功。
+
+五、官方参考
+------------
+
+yt-dlp PO Token Guide：
+https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide
+
+yt-dlp 相关 403 Issue：
+https://github.com/yt-dlp/yt-dlp/issues/14421
+
+bgutil-ytdlp-pot-provider：
+https://github.com/Brainicism/bgutil-ytdlp-pot-provider

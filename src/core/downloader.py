@@ -52,7 +52,9 @@ class Downloader(QObject):
                 'default_browser': 'firefox',
                 'special_args': [
                     '--extractor-args',
-                    f'youtubepot-bgutilscript:server_home={self.pot_server_home}'
+                    f'youtubepot-bgutilscript:server_home={self.pot_server_home}',
+                    '--extractor-args',
+                    'youtube:player_client=web_creator'
                 ],
                 'default_format': None  # 使用用户选择的格式
             },
@@ -634,6 +636,10 @@ class Downloader(QObject):
                             
                             # 进一步清理可能的数字和百分比信息
                             import re
+                            # yt-dlp 会先下载小型临时文件测试格式可用性，不能将其当作视频标题
+                            if title_part.lower().endswith('.tmp'):
+                                self.config.log(f"跳过格式检测临时文件标题: '{title_part}'", logging.DEBUG)
+                                title_part = ""
                             # 移除类似 "0.0%" 的百分比信息
                             title_part = re.sub(r'\s*\d+\.\d+%\s*.*$', '', title_part)
                             # 移除类似 ".f123" 的临时文件扩展名

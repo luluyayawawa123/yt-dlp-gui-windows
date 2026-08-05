@@ -372,6 +372,13 @@ export class SessionManager {
             this._minterCache.set(cacheSpec.key, tokenMinter);
             return tokenMinter;
         } catch (e) {
+            console.error(
+                "Underlying error while generating an integrity token:",
+                e,
+            );
+            if (e instanceof Error && e.cause) {
+                console.error("Underlying cause:", e.cause);
+            }
             throw new Error(`Failed to generate an integrity token.`, {
                 cause: e,
             });
