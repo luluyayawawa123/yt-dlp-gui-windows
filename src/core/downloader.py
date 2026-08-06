@@ -41,7 +41,7 @@ class Downloader(QObject):
         self.env = QProcessEnvironment.systemEnvironment()
         self.env.insert("PATH", str(self.bin_dir) + os.pathsep + os.environ.get("PATH", ""))
         
-        # 保留 bgutil PO Token 脚本路径，方便未来重新适配需要 Token 的客户端。
+        # mweb 使用 bgutil 提供 GVS PO Token；普通模式不读取账户 Cookies。
         self.pot_server_home = self.bin_dir / "bgutil-ytdlp-pot-provider" / "server"
         
         # 定义支持的视频平台配置
@@ -50,10 +50,12 @@ class Downloader(QObject):
                 'domains': ['youtube.com', 'youtu.be', 'm.youtube.com'],
                 'require_cookies': False,
                 'default_browser': None,
-                'requires_pot_prewarm': False,
+                'requires_pot_prewarm': True,
                 'special_args': [
                     '--extractor-args',
-                    'youtube:player_client=android_vr'
+                    f'youtubepot-bgutilscript:server_home={self.pot_server_home}',
+                    '--extractor-args',
+                    'youtube:player_client=mweb'
                 ],
                 'default_format': None  # 使用用户选择的格式
             },
@@ -90,18 +92,8 @@ class Downloader(QObject):
             }
         }
 
-    _YOUTUBE_RETRY_ERROR_MARKERS = (
-        "po token",
-        "bgutil",
-        "requested format is not available",
-        "failed to check script version",
-        "timeoutexpired",
-        "timed out",
-        "script-deno",
-        "gvs po token",
-        "generate_once.ts",
-    )
-    _MAX_YOUTUBE_RECOVERY_RETRIES = 2
+    # 首次下载加 5 次自动恢复，合计最多尝试 6 次。
+    _MAX_YOUTUBE_RECOVERY_RETRIES = 5
         
     def reset_state(self):
         """重置下载器状态"""
@@ -346,6 +338,10 @@ class Downloader(QObject):
             # 检测平台并获取配置
             platform = self.detect_platform(url)
             platform_config = self.get_platform_config(platform)
+            youtube_hls_fallback = (
+                platform == 'youtube'
+                and format_options.get('youtube_hls_fallback', False)
+            )
             
             # 对小红书URL进行格式规范化
             if platform == 'xiaohongshu':
@@ -366,7 +362,11 @@ class Downloader(QObject):
                     raise Exception(error_msg)
             
             # 对于需要cookies的平台，检查浏览器是否可用
-            if platform_config['require_cookies']:
+            # 普通 mweb 模式不读取账户 Cookies；斗地主模式仍依赖 Firefox Cookies。
+            requires_cookies = (
+                platform_config['require_cookies'] or youtube_hls_fallback
+            )
+            if requires_cookies:
                 if not self._check_browser_available(browser):
                     browser_names = {
                         'firefox': 'Firefox 火狐浏览器',
@@ -410,12 +410,20 @@ class Downloader(QObject):
             ]
 
             # 添加平台特殊参数
-            if platform_config['special_args']:
-                args.extend(platform_config['special_args'])
-                self.config.log(f"添加平台 {platform} 特殊参数: {platform_config['special_args']}", logging.DEBUG)
+            special_args = platform_config['special_args']
+            if youtube_hls_fallback:
+                special_args = [
+                    '--no-plugin-dirs',
+                    '--extractor-args',
+                    'youtube:player_client=web_safari',
+                ]
+
+            if special_args:
+                args.extend(special_args)
+                self.config.log(f"添加平台 {platform} 特殊参数: {special_args}", logging.DEBUG)
 
             # 添加浏览器 cookies（仅对需要的平台）
-            if platform_config['require_cookies'] and browser:
+            if requires_cookies and browser:
                 args.extend(["--cookies-from-browser", browser])
                 self.config.log(f"使用浏览器 {browser} 的cookies", logging.DEBUG)
 
@@ -424,7 +432,13 @@ class Downloader(QObject):
                 user_format = format_options['format']
                 
                 # 检查用户选择的格式是否适用于当前平台
-                if platform != 'youtube' and user_format in ['bv*+ba', 'bv[ext=mp4]+ba[ext=m4a]', 'bv*[height<=1080]+ba']:
+                youtube_formats = [
+                    'bv*+ba',
+                    'bv[ext=mp4]+ba[ext=m4a]',
+                    'bv*[height<=1080]+ba',
+                    'b[height<=1080][protocol^=m3u8]',
+                ]
+                if platform != 'youtube' and user_format in youtube_formats:
                     # 非YouTube平台但用户选择了YouTube特定格式，使用平台默认格式
                     if platform_config.get('default_format'):
                         args.extend(["-f", platform_config['default_format']])
@@ -452,8 +466,11 @@ class Downloader(QObject):
 
             # 添加字幕下载选项
             if format_options.get('writesubtitles'):
+                args.append("--write-subs")         # 下载作者字幕
+                if youtube_hls_fallback:
+                    # 斗地主模式作为临时兜底，同时保留 YouTube 自动字幕。
+                    args.append("--write-auto-subs")
                 args.extend([
-                    "--write-subs",                # 下载字幕
                     "--sub-langs", "all",          # 下载所有语言的字幕
                     "--convert-subs", "srt"        # 转换为 srt 格式
                 ])
@@ -526,26 +543,65 @@ class Downloader(QObject):
         process.readyReadStandardError.connect(handle_stderr)
         return process
 
-    def _should_retry_youtube_failure(self, process, output, error):
-        """仅对首次、无实质进度的 YouTube 初始化类失败补一次重试。"""
+    @staticmethod
+    def _classify_youtube_failure(output, error):
+        """识别能够安全自动恢复的 YouTube 故障类型。"""
+        combined = f"{output}\n{error}".lower()
+
+        if "http error 403" in combined and (
+            "googlevideo.com/videoplayback" in combined
+            or "unable to download video data" in combined
+        ):
+            return "media_403"
+
+        if any(marker in combined for marker in (
+            "failed to resolve",
+            "getaddrinfo failed",
+            "errno 11002",
+        )):
+            return "dns_resolution"
+
+        if (
+            "generate_once.ts" in combined
+            and "--version" in combined
+            and any(marker in combined for marker in (
+                "timed out after",
+                "timeoutexpired",
+                "failed to check script version",
+            ))
+        ):
+            return "pot_startup"
+
+        if any(marker in combined for marker in (
+            "failed while generating pot",
+            "error fetching po token",
+            "failed to generate an integrity token",
+        )):
+            return "pot_generation"
+
+        return None
+
+    def _get_youtube_recovery_reason(self, process, output, error):
+        """返回当前 YouTube 失败的恢复类型；不应恢复时返回 None。"""
         if process.property("cancel_requested"):
-            return False
+            return None
 
         platform = self.detect_platform(process.property("url") or "")
         if platform != "youtube":
-            return False
+            return None
 
         retry_count = int(process.property("retry_count") or 0)
         if retry_count >= self._MAX_YOUTUBE_RECOVERY_RETRIES:
-            return False
+            return None
 
-        if process.property("saw_download_progress"):
-            return False
+        reason = self._classify_youtube_failure(output, error)
+        if reason in {"pot_startup", "pot_generation"} and process.property(
+            "saw_download_progress"
+        ):
+            return None
+        return reason
 
-        combined = f"{output}\n{error}".lower()
-        return any(marker in combined for marker in self._YOUTUBE_RETRY_ERROR_MARKERS)
-
-    def _restart_process(self, process):
+    def _restart_process(self, process, recovery_reason):
         """使用原参数自动补救重试。"""
         args = process.property("command_args")
         if not args:
@@ -572,9 +628,19 @@ class Downloader(QObject):
             self.processes.append(new_process)
 
         total_attempts = self._MAX_YOUTUBE_RECOVERY_RETRIES + 1
+        recovery_messages = {
+            "media_403": "下载地址被拒绝（HTTP 403），正在重新获取下载地址并断点续传",
+            "dns_resolution": "GoogleVideo 域名 DNS 解析失败，正在重新获取下载地址并断点续传",
+            "pot_startup": "PO Token 组件启动超时，正在重新初始化组件",
+            "pot_generation": "PO Token 生成失败，正在重新获取 Token",
+        }
+        recovery_message = recovery_messages.get(
+            recovery_reason,
+            "YouTube 下载失败，正在自动恢复",
+        )
         self.output_received.emit(
             task_id,
-            f"YouTube 初始化失败，正在自动重试（第 {retry_count + 1}/{total_attempts} 次尝试）...",
+            f"{recovery_message}，正在自动重试（第 {retry_count + 1}/{total_attempts} 次尝试）...",
         )
         process.deleteLater()
         new_process.start(args[0], args[1:])
@@ -930,9 +996,15 @@ class Downloader(QObject):
             # 检查是否成功
             success = exit_code == 0
 
-            if not success and self._should_retry_youtube_failure(process, output, error):
-                self._restart_process(process)
-                return
+            if not success:
+                recovery_reason = self._get_youtube_recovery_reason(
+                    process,
+                    output,
+                    error,
+                )
+                if recovery_reason:
+                    self._restart_process(process, recovery_reason)
+                    return
             
             # 发送完成信号
             if success:

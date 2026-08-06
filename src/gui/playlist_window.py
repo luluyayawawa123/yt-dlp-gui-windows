@@ -4,11 +4,12 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
 from PyQt6.QtCore import Qt, QProcess, QProcessEnvironment, pyqtSignal
 from PyQt6.QtGui import QIcon
 from .saved_urls_dialog import SavedURLsDialog
-from core.youtube_pot import prewarm_youtube_pot
+from core.youtube_pot import invalidate_cached_youtube_pot, prewarm_youtube_pot
 from core.playlist_download import (
     PLAYLIST_CLIENT,
     build_playlist_item_args,
     parse_playlist_metadata,
+    playlist_client_requires_cookies,
     playlist_client_requires_pot,
     safe_playlist_folder_name,
 )
@@ -1064,12 +1065,12 @@ class PlaylistWindow(QMainWindow):
         if not success:
             self._set_download_button_idle()
             self.back_button.setEnabled(True)
-            self.status_label.setText("初始化失败")
-            self._append_output_log(f"YouTube 下载组件初始化失败：{message}")
+            self.status_label.setText("PO Token 组件启动失败")
+            self._append_output_log(f"PO Token 组件启动失败：{message}")
             pending = self._pending_download_start
             self._pending_download_start = None
-            logging.error(f"YouTube 组件初始化失败: {message}")
-            QMessageBox.critical(self, "错误", f"下载失败：{message}")
+            logging.error(f"PO Token 组件启动失败: {message}")
+            QMessageBox.critical(self, "PO Token 组件启动失败", message)
             if pending and pending.get("output_path"):
                 self.config.config['download_path'] = pending["output_path"]
                 self.config.save_config()
@@ -1103,7 +1104,7 @@ class PlaylistWindow(QMainWindow):
             "--dump-single-json",
             "--encoding", "utf-8",
         ]
-        if playlist_client_requires_pot():
+        if playlist_client_requires_cookies():
             command.extend(["--cookies-from-browser", "firefox"])
         command.append(pending["url"])
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
@@ -1184,7 +1185,7 @@ class PlaylistWindow(QMainWindow):
         self._start_active_download_process()
 
     def _start_active_download_process(self):
-        """使用固定 web_creator 客户端启动当前播放列表条目。"""
+        """使用固定 mweb 客户端启动当前播放列表条目。"""
         active = self._active_download_start
         metadata = self._playlist_metadata
         if not active or metadata is None:
@@ -1195,6 +1196,21 @@ class PlaylistWindow(QMainWindow):
             return
 
         item = metadata.items[self._playlist_item_index]
+        if playlist_client_requires_pot():
+            ok, message = invalidate_cached_youtube_pot(item.video_id)
+            if not ok:
+                self._mark_item_failed(
+                    item.video_id,
+                    "pot_cache_refresh_failed",
+                    message,
+                    "initialization",
+                )
+                self._append_output_log(f"❌ {message}")
+                logging.error(f"播放列表条目 Token 缓存刷新失败: {item.video_id}, {message}")
+                self._finish_playlist_download()
+                QMessageBox.critical(self, "Token 缓存刷新失败", message)
+                return
+
         args = build_playlist_item_args(
             item=item,
             common_args=active["common_args"],

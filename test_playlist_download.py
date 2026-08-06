@@ -7,6 +7,7 @@ from src.core.playlist_download import (
     PLAYLIST_CLIENT,
     build_playlist_item_args,
     parse_playlist_metadata,
+    playlist_client_requires_cookies,
     playlist_client_requires_pot,
     safe_playlist_folder_name,
 )
@@ -33,20 +34,22 @@ class PlaylistDownloadTests(unittest.TestCase):
         )
 
     def test_fixed_client(self):
-        self.assertEqual(PLAYLIST_CLIENT, "android_vr")
-        self.assertFalse(playlist_client_requires_pot())
+        self.assertEqual(PLAYLIST_CLIENT, "mweb")
+        self.assertTrue(playlist_client_requires_pot())
+        self.assertFalse(playlist_client_requires_cookies())
         self.assertTrue(playlist_client_requires_pot("mweb"))
         self.assertTrue(playlist_client_requires_pot("web_creator"))
+        self.assertTrue(playlist_client_requires_cookies("web_creator"))
 
-    def test_android_vr_args_exclude_cookies_and_provider(self):
+    def test_mweb_args_use_provider_without_cookies(self):
         item = self.metadata.items[0]
         with tempfile.TemporaryDirectory() as pot_home:
             args = build_playlist_item_args(item, ["-f", "bv*+ba"], "out", pot_home)
 
         self.assertNotIn("--cookies-from-browser", args)
-        self.assertFalse(any("server_home=" in arg for arg in args))
-        self.assertIn("youtube:player_client=android_vr", args)
-        self.assertNotIn("youtube:player_client=mweb", args)
+        self.assertTrue(any("server_home=" in arg for arg in args))
+        self.assertIn("youtube:player_client=mweb", args)
+        self.assertNotIn("youtube:player_client=android_vr", args)
         self.assertNotIn("youtube:player_client=web_creator", args)
 
     def test_safe_folder_name(self):

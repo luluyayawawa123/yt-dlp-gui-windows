@@ -5,9 +5,10 @@ from dataclasses import dataclass
 from typing import Iterable
 
 
-# 播放列表固定客户端；改为 mweb/web_creator 时会自动恢复 Cookies、PO Token 和预热流程。
-PLAYLIST_CLIENT = "android_vr"
+# 播放列表与普通下载模式保持一致：mweb + PO Token，不读取账户 Cookies。
+PLAYLIST_CLIENT = "mweb"
 _POT_CLIENTS = {"mweb", "web_creator"}
+_COOKIE_CLIENTS = {"web_creator"}
 _WINDOWS_RESERVED_NAMES = {
     "CON", "PRN", "AUX", "NUL",
     *(f"COM{i}" for i in range(1, 10)),
@@ -71,8 +72,13 @@ def safe_playlist_folder_name(title: str, fallback: str) -> str:
 
 
 def playlist_client_requires_pot(client: str = PLAYLIST_CLIENT) -> bool:
-    """返回客户端是否需要 Cookies、PO Token provider 和预热流程。"""
+    """返回客户端是否需要 PO Token provider 和预热流程。"""
     return client in _POT_CLIENTS
+
+
+def playlist_client_requires_cookies(client: str = PLAYLIST_CLIENT) -> bool:
+    """返回客户端是否需要浏览器账户 Cookies。"""
+    return client in _COOKIE_CLIENTS
 
 
 def build_playlist_item_args(
@@ -90,6 +96,7 @@ def build_playlist_item_args(
                 "--extractor-args",
                 f"youtubepot-bgutilscript:server_home={pot_server_home}",
             ])
+    if playlist_client_requires_cookies() and browser:
         args.extend(["--cookies-from-browser", browser])
 
     args.extend([

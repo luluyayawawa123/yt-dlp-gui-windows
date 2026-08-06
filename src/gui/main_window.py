@@ -9,7 +9,11 @@ import os
 import datetime
 from core.downloader import Downloader
 from core.config import Config
-from core.youtube_pot import prewarm_youtube_pot
+from core.youtube_pot import (
+    extract_youtube_video_id,
+    invalidate_cached_youtube_pot,
+    prewarm_youtube_pot,
+)
 from gui.log_window import LogWindow
 import sys
 from PyQt6.QtWidgets import QApplication
@@ -412,10 +416,11 @@ class MainWindow(QMainWindow):
             "4K MP4",
             "1080P MP4",
             "480P MP4",
-            "仅MP3音频"
+            "仅MP3音频",
+            "斗地主模式"
         ])
         saved_quality = self.config.config.get('quality_index', 0)
-        if 0 <= saved_quality <= 5:
+        if 0 <= saved_quality <= 6:
             self.quality_combo.setCurrentIndex(saved_quality)
         self.quality_combo.currentIndexChanged.connect(self._save_quality_setting)
 
@@ -842,14 +847,21 @@ class MainWindow(QMainWindow):
             
         # 获取画质选择
         quality_index = self.quality_combo.currentIndex()
+        quality_formats = [
+            'bv*+ba',
+            'bv[ext=mp4]+ba[ext=m4a]',
+            'bv[ext=mp4][height<=2160]+ba[ext=m4a]',
+            'bv[ext=mp4][height<=1080]+ba[ext=m4a]',
+            'bv[ext=mp4][height<=480]+ba[ext=m4a]',
+            'ba/b',
+            'b[height<=1080][protocol^=m3u8]',
+        ]
         format_options = {
-            'format': 'bv*+ba' if quality_index == 0 else 
-                     'bv[ext=mp4]+ba[ext=m4a]' if quality_index == 1 else 
-                     'bv[ext=mp4][height<=2160]+ba[ext=m4a]' if quality_index == 2 else
-                     'bv[ext=mp4][height<=1080]+ba[ext=m4a]' if quality_index == 3 else
-                     'bv[ext=mp4][height<=480]+ba[ext=m4a]' if quality_index == 4 else
-                     'ba/b'  # 选择最佳音频
+            'format': quality_formats[quality_index]
         }
+
+        if quality_index == 6:
+            format_options['youtube_hls_fallback'] = True
 
         # 如果是 MP3 选项，添加音频格式参数
         if quality_index == 5:  # 仅MP3音频选项
@@ -1127,8 +1139,11 @@ class MainWindow(QMainWindow):
         if hasattr(self, "header_status_label") and self.header_status_label.isVisible():
             self._position_header_status_label()
 
-    def _requires_youtube_prewarm(self, urls):
+    def _requires_youtube_prewarm(self, urls, format_options):
         """判断当前 YouTube 客户端是否需要预热 PO Token 组件。"""
+        if format_options.get('youtube_hls_fallback', False):
+            return False
+
         youtube_config = self.downloader.get_platform_config('youtube')
         if not youtube_config.get('requires_pot_prewarm', False):
             return False
@@ -1169,8 +1184,8 @@ class MainWindow(QMainWindow):
 
         if not success:
             self._pending_download_request = None
-            self._set_header_status("YouTube 组件初始化失败", is_error=True)
-            QMessageBox.critical(self, "初始化失败", message)
+            self._set_header_status("PO Token 组件启动失败", is_error=True)
+            QMessageBox.critical(self, "PO Token 组件启动失败", message)
             self._enable_controls()
             return
 
@@ -1227,8 +1242,27 @@ class MainWindow(QMainWindow):
 
         return success
 
-    def _queue_download_request(self, urls, output_path, format_options, browser):
+    def _queue_download_request(
+        self,
+        urls,
+        output_path,
+        format_options,
+        browser,
+        refresh_pot_cache=True,
+    ):
         """准备并启动一组下载请求，供普通下载和手动重试共用。"""
+        if refresh_pot_cache and self._requires_youtube_prewarm(urls, format_options):
+            refreshed_video_ids = set()
+            for url in urls:
+                video_id = extract_youtube_video_id(url)
+                if not video_id or video_id in refreshed_video_ids:
+                    continue
+                ok, message = invalidate_cached_youtube_pot(video_id)
+                if not ok:
+                    QMessageBox.critical(self, "Token 缓存刷新失败", message)
+                    return False
+                refreshed_video_ids.add(video_id)
+
         self.total_urls = len([url for url in urls if url.strip()])
         self.completed_urls = 0
 
@@ -1250,7 +1284,7 @@ class MainWindow(QMainWindow):
             'browser': browser,
         }
 
-        if self._requires_youtube_prewarm(urls):
+        if self._requires_youtube_prewarm(urls, format_options):
             self._start_youtube_prewarm()
             return
 
@@ -1276,6 +1310,7 @@ class MainWindow(QMainWindow):
             task_widget.download_path,
             dict(task_widget.format_options or {}),
             task_widget.browser,
+            refresh_pot_cache=False,
         )
 
     def clear_download_history(self):
