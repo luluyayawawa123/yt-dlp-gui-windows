@@ -41,15 +41,15 @@ class Downloader(QObject):
         self.env = QProcessEnvironment.systemEnvironment()
         self.env.insert("PATH", str(self.bin_dir) + os.pathsep + os.environ.get("PATH", ""))
         
-        # mweb 使用 bgutil 提供 GVS PO Token；普通模式不读取账户 Cookies。
+        # 实验方案：普通模式使用 mweb + Firefox Cookies + 修复后的 bgutil GVS PO Token。
         self.pot_server_home = self.bin_dir / "bgutil-ytdlp-pot-provider" / "server"
         
         # 定义支持的视频平台配置
         self.platform_configs = {
             'youtube': {
                 'domains': ['youtube.com', 'youtu.be', 'm.youtube.com'],
-                'require_cookies': False,
-                'default_browser': None,
+                'require_cookies': True,
+                'default_browser': 'firefox',
                 'requires_pot_prewarm': True,
                 'special_args': [
                     '--extractor-args',
@@ -361,8 +361,8 @@ class Downloader(QObject):
                     self.config.log("小红书用户主页批量下载暂不支持", logging.WARNING)
                     raise Exception(error_msg)
             
-            # 对于需要cookies的平台，检查浏览器是否可用
-            # 普通 mweb 模式不读取账户 Cookies；斗地主模式仍依赖 Firefox Cookies。
+            # 对于需要cookies的平台，检查浏览器是否可用。
+            # 实验期间普通 mweb 模式和斗地主模式都读取用户选择的浏览器 Cookies。
             requires_cookies = (
                 platform_config['require_cookies'] or youtube_hls_fallback
             )

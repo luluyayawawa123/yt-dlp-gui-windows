@@ -153,6 +153,35 @@ export type ChallengeData = {
     clientExperimentsStateBlob: string;
 };
 
+// 临时跟进上游 #243：解析 YouTube 首页中的 ytAtN 对象。
+// 来源：LuanRT/BgUtils v4.0.3（MIT）。
+function parseLooseJSON(looseJson: string): Record<string, any> {
+    const sanitizedString = looseJson.replace(
+        /\\x([0-9A-Fa-f]{2})/g,
+        (_match, hex) => String.fromCharCode(parseInt(hex, 16)),
+    );
+    let jsonStr = sanitizedString.replace(/,\s*([\]}])/g, "$1");
+    jsonStr = jsonStr.replace(/'((?:[^'\\]|\\[\s\S])*)'/g, (_match, innerStr) =>
+        JSON.stringify(innerStr.replace(/\\'/g, "'")),
+    );
+    jsonStr = jsonStr.replace(/([{,]\s*)([a-zA-Z0-9_$]+)\s*:/g, '$1"$2":');
+    const parsedData = JSON.parse(jsonStr);
+    for (const key in parsedData) {
+        const val = parsedData[key];
+        if (
+            typeof val === "string" &&
+            (val.trim().startsWith("{") || val.trim().startsWith("["))
+        ) {
+            try {
+                parsedData[key] = JSON.parse(val);
+            } catch {
+                /* 保留无法继续解析的原始字符串 */
+            }
+        }
+    }
+    return parsedData;
+}
+
 export class SessionManager {
     // hardcoded API key that has been used by youtube for years
     private static readonly REQUEST_KEY = "O43z0dpjhgX20SCx4KAo";
@@ -230,14 +259,76 @@ export class SessionManager {
         return this._minterCache;
     }
 
+    // 从同一次 YouTube 首页响应中取得相互匹配的 ytcfg 和 BotGuard challenge，
+    // 让生成的 Token 包含当前网页会话要求的 EVENT_ID。
+    private async getChallengeFromHomepage(
+        bgConfig: BgConfig,
+    ): Promise<ChallengeData | undefined> {
+        try {
+            const pageResponse = await bgConfig.fetch(
+                "https://www.youtube.com",
+                {
+                    method: "GET",
+                    headers: {
+                        accept: "*/*",
+                        "accept-language": "en-US,en;q=0.7",
+                        "user-agent": USER_AGENT,
+                    },
+                },
+            );
+            const pageHtml: string = await pageResponse.text();
+
+            const ytcfgMatch = pageHtml.match(/ytcfg\.set\(({.+?})\);/s);
+            if (ytcfgMatch) {
+                const ytObj = { config_: JSON.parse(ytcfgMatch[1] as string) };
+                const g: any = globalThis as any;
+                g.yt = ytObj;
+                if (g.window) g.window.yt = ytObj;
+            } else {
+                this.logger.warn(
+                    "homepage-challenge: no ytcfg found (EVENT_ID missing)",
+                );
+            }
+
+            const attMatch = pageHtml.match(
+                /window\.ytAtN\(\s*({[\s\S]*?})\s*\)/,
+            );
+            if (!attMatch) {
+                this.logger.warn(
+                    "homepage-challenge: no ytAtN challenge in page",
+                );
+                return undefined;
+            }
+            const attData: any = parseLooseJSON(attMatch[1] as string);
+            const bgChallenge = attData?.R?.bgChallenge;
+            if (!bgChallenge?.program || !bgChallenge?.interpreterUrl) {
+                this.logger.warn(
+                    "homepage-challenge: ytAtN payload missing bgChallenge",
+                );
+                return undefined;
+            }
+            this.logger.debug("Using challenge from the homepage (patched)");
+            return bgChallenge as ChallengeData;
+        } catch (e) {
+            this.logger.warn(
+                `homepage-challenge: failed (${e?.message}), falling back`,
+            );
+            return undefined;
+        }
+    }
+
     private async getDescrambledChallenge(
         bgConfig: BgConfig,
         challenge?: ChallengeData,
         innertubeContext?: InnertubeContext,
     ): Promise<DescrambledChallenge> {
         try {
+            challenge =
+                (await this.getChallengeFromHomepage(bgConfig)) ?? challenge;
             if (!challenge) {
-                this.logger.debug("Using challenge from /att/get");
+                this.logger.debug(
+                    "Using challenge from /att/get (legacy fallback)",
+                );
                 const attGetResponse = await bgConfig.fetch(
                     "https://www.youtube.com/youtubei/v1/att/get?prettyPrint=false",
                     {

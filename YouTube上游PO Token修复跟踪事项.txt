@@ -1,0 +1,98 @@
+YouTube 上游 PO Token 修复跟踪事项
+
+记录日期：2026-08-07
+
+一、当前需要跟踪的核心事项
+
+1. yt-dlp 主帖：
+https://github.com/yt-dlp/yt-dlp/issues/17368
+状态：已关闭，标记为 external-issue。yt-dlp 维护者认为问题主要在外部 PO Token 组件，并指向 bgutil Issue #242。
+
+2. 重复帖：
+https://github.com/yt-dlp/yt-dlp/issues/17376
+状态：已关闭，标记为 #17368 的重复问题。
+
+3. bgutil 问题跟踪：
+https://github.com/Brainicism/bgutil-ytdlp-pot-provider/issues/242
+状态：开放中。
+已确认从 2026 年 7 月下旬开始，部分成功生成的 WebPO Token 仍会被 GoogleVideo 拒绝并返回 HTTP 403。相同视频和相同网络环境也可能时好时坏。
+
+4. bgutil 待合并修复：
+https://github.com/Brainicism/bgutil-ytdlp-pot-provider/pull/243
+状态：开放中，尚未合并，尚未发布正式版本。
+修复思路：从同一个 YouTube 首页会话中提取相互匹配的 ytcfg 和初始 BotGuard challenge，使 Token 带有当前网页会话要求的 EVENT_ID 上下文。
+公开测试结果：原版 1.3.1 成功 14/24，修复版成功 22/24。该修复提高成功率，但不能解决所有 IP 反机器人检查。
+
+5. 上游 BgUtils 相关修改：
+https://github.com/LuanRT/BgUtils/pull/44
+状态：已经合并。
+说明：该修改确认 YouTube 已开始把初始验证挑战与 yt.config_.EVENT_ID 绑定，但本软件使用的 bgutil Provider 仍需完成 #243 的适配并发布新版本。
+
+6. 本地提前实验（2026-08-07）：
+
+- 已把 PR #243 的单文件修复提前应用到本地 bgutil 1.3.1：
+  bin/bgutil-ytdlp-pot-provider/server/src/session_manager.ts
+- 普通下载暂时改为：mweb + Firefox Cookies + 修复后的 bgutil PO Token。
+- 播放列表仍为：mweb + bgutil PO Token，不传 Cookies，未参与本次实验。
+- 测试视频：https://www.youtube.com/watch?v=zM8aeERz4BQ
+- 补丁前：普通模式使用 mweb + Firefox Cookies，连续6次重新解析仍返回 HTTP 403。
+- 补丁后第一次直接测试仍失败，确认原因是复用了磁盘中补丁前生成的旧 Token。
+- 清除该视频旧 Token 后重新测试：成功生成新 Token，完整下载480P独立视频流397和音频流140，并由 FFmpeg 合并完成，全程没有403。
+- 用户随后使用软件继续实测：原来的 IP，以及另外两个美国热门、质量相对较差的公共/机房出口 IP，均能正常下载；本轮没有出现 Token 获取失败、媒体403或 LOGIN_REQUIRED。
+- 结论：补丁已经在多个不同质量的出口 IP 下表现出明显效果；目前结果良好，但测试时间和样本数量仍有限，尚不能视为100%稳定的正式方案。
+- 本地补丁没有修改版本号，组件仍显示1.3.1，以免误认为官方正式发布。
+
+二、两个问题必须分开判断
+
+1. LOGIN_REQUIRED / Sign in to confirm you’re not a bot
+
+发生阶段：通常在生成 PO Token 之前。
+主要含义：YouTube 不接受当前 IP 下的匿名 mweb 请求，要求登录验证。
+影响因素：公共 VPN、数据中心 IP、IP 当前信誉和 YouTube 动态风控状态。
+当前处理：更换 IP 后重新开始全新下载；不应反复自动重试。需要稳定兜底时使用“斗地主模式 + Firefox Cookies”，最高 1080P。
+
+2. PO Token 已成功生成，但 GoogleVideo 返回 HTTP 403
+
+发生阶段：已经获取格式和媒体地址，开始下载后立即或中途失败。
+当前判断：与 YouTube 新增的网页会话上下文绑定有关，bgutil 1.3.1 尚未完整适配。
+当前处理：软件会复用当前 Token、重新解析媒体地址并断点续传，首次加自动恢复合计最多尝试 6 次。这只能提高成功率，不能从根本上修复上游问题。
+
+三、客户端现状
+
+1. mweb + Firefox Cookies + PR #243 实验补丁
+
+当前普通下载模式采用的临时实验方案。
+目的：使用登录 Cookies 减少匿名 mweb 的 LOGIN_REQUIRED，同时用 PR #243 修复 Cookies 路线中的无效 Token / GoogleVideo 403。
+现状：一个原本连续6次403的失败样本已完整通过480P下载和合并；用户随后在原 IP 和另外两个质量相对较差的美国出口 IP 下继续测试，也都能正常下载。还需要继续观察长时间使用、更多视频和4K完整下载的稳定性。
+
+2. mweb + 不传 Cookies + bgutil PO Token
+
+当前播放列表模式采用的方案，也是普通模式实验前的方案。
+优点：可以获取分离的视频和音频格式，具备4K下载能力。
+缺点：依赖 IP 质量。IP 被 YouTube 匿名访问风控时，会在生成 Token 前直接返回 LOGIN_REQUIRED。
+
+3. web_creator + Firefox Cookies + bgutil PO Token
+
+此前测试方案，不是当前默认方案。
+优点：因为携带账户 Cookies，较少遇到匿名访问的 LOGIN_REQUIRED。
+主要故障：部分时间或视频会在 BotGuard 完整性 Token 生成阶段出现 VM operation timed out，无法稳定生成 Token。
+注意：它并不是完全不受 YouTube 风控影响，也不能保证稳定下载。
+
+4. mweb + Firefox Cookies（未应用 PR #243）
+
+旧版测试中可以获取格式并开始下载，但曾稳定复现下载到约5%后返回 HTTP 403。当前正在用 PR #243 修复后的同一路线重新验证。
+
+四、以后升级时的操作顺序
+
+1. 继续检查 bgutil PR #243 是否已经合并。
+2. 检查 bgutil-ytdlp-pot-provider 是否发布高于 1.3.1 的正式版本，并确认发行说明包含 #242/#243 修复。
+3. 不要单独替换 bgutils-js。插件 ZIP、Provider server 和依赖目录必须按官方兼容版本整套升级。
+4. 同时检查 yt-dlp Nightly 是否有配套的 ytcfg、BotGuard 或 PO Token 修改。
+5. 本地实验补丁必须保留清晰记录；官方发布新版后，用官方完整组件替换本地补丁。
+6. 至少测试：mweb 带/不带 Cookies、480P分离格式、4K格式列出、完整长视频下载、403自动恢复、GCP IP与公共 VPN IP。
+7. 验证稳定后再更新软件内置组件和本文档。
+
+五、当前结论
+
+媒体地址403已有明确的 PR #243 候选修复。本地补丁目前已通过原失败样本和多个不同质量出口 IP 的实测，效果明显；但尚未获得官方正式发布，也尚未完成长期稳定性验证。
+LOGIN_REQUIRED 属于另一层 IP 反机器人检查，升级 PO Token Provider 也不能保证解决；遇到时仍需更换 IP，或者使用带 Firefox Cookies 的“斗地主模式”兜底。

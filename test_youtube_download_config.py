@@ -30,7 +30,7 @@ class YouTubeDownloadConfigTests(unittest.TestCase):
         self.fake_process = _FakeProcess()
         self.downloader._create_download_process = lambda **kwargs: self.fake_process
 
-    def test_normal_download_uses_mweb_without_browser_cookies(self):
+    def test_normal_download_uses_mweb_with_firefox_cookies(self):
         with tempfile.TemporaryDirectory() as output_path:
             started = self.downloader.start_download(
                 "https://www.youtube.com/watch?v=rY65wFcjdDM",
@@ -41,7 +41,9 @@ class YouTubeDownloadConfigTests(unittest.TestCase):
 
         self.assertTrue(started)
         args = self.fake_process.arguments
-        self.assertNotIn("--cookies-from-browser", args)
+        self.assertIn("--cookies-from-browser", args)
+        cookies_index = args.index("--cookies-from-browser")
+        self.assertEqual(args[cookies_index + 1], "firefox")
         self.assertIn("youtube:player_client=mweb", args)
         self.assertTrue(any("youtubepot-bgutilscript:server_home=" in arg for arg in args))
         self.assertNotIn("youtube:player_client=android_vr", args)
