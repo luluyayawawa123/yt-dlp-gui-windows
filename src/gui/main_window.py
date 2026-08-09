@@ -994,7 +994,7 @@ class MainWindow(QMainWindow):
                 task_widget.status_label.setStyleSheet("color: #FF9800;")
                 task_widget.retry_button.hide()
             elif "正在自动重试" in message:
-                task_widget.progress_label.setText(message)
+                self._set_task_progress_message(task_widget, message)
                 task_widget.status_label.setText("处理中")
                 task_widget.status_label.setStyleSheet("color: #FF9800;")
                 task_widget.retry_button.hide()
@@ -1018,6 +1018,26 @@ class MainWindow(QMainWindow):
                     padding: 2px 8px;
                 """)
                 task_widget.retry_button.hide()
+
+    @staticmethod
+    def _compact_task_message(message, max_length=42):
+        """将任务卡片文案压缩为单行，完整信息由实时日志或悬停提示保留。"""
+        text = next(
+            (line.strip() for line in str(message or "").splitlines() if line.strip()),
+            "下载失败，请查看实时下载日志",
+        )
+        if len(text) <= max_length:
+            return text
+        return f"{text[:max_length - 1].rstrip()}…"
+
+    def _set_task_progress_message(self, task_widget, message):
+        """更新任务卡片的简短文案，并在需要时保留完整悬停提示。"""
+        full_message = str(message or "").strip()
+        compact_message = self._compact_task_message(full_message)
+        task_widget.progress_label.setText(compact_message)
+        task_widget.progress_label.setToolTip(
+            full_message if compact_message != full_message else ""
+        )
 
     def download_finished(self, success, message, title, task_id):
         """处理下载完成事件"""
@@ -1050,6 +1070,9 @@ class MainWindow(QMainWindow):
                 }
             """)
         else:
+            # 最终失败原因必须覆盖自动重试期间的旧提示（例如先 DNS 失败，
+            # 后续实际以 LOGIN_REQUIRED 结束）。任务卡片保持单行，详细内容仍在日志中。
+            self._set_task_progress_message(task_widget, message)
             task_widget.status_label.setText("❌ 下载失败")
             task_widget.status_label.setStyleSheet("""
                 color: #F44336;

@@ -629,10 +629,10 @@ class Downloader(QObject):
 
         total_attempts = self._MAX_YOUTUBE_RECOVERY_RETRIES + 1
         recovery_messages = {
-            "media_403": "下载地址被拒绝（HTTP 403），正在重新获取下载地址并断点续传",
-            "dns_resolution": "GoogleVideo 域名 DNS 解析失败，正在重新获取下载地址并断点续传",
-            "pot_startup": "PO Token 组件启动超时，正在重新初始化组件",
-            "pot_generation": "PO Token 生成失败，正在重新获取 Token",
+            "media_403": "HTTP 403，正在自动重试",
+            "dns_resolution": "DNS 解析失败，正在自动重试",
+            "pot_startup": "PO Token 组件启动超时，正在自动重试",
+            "pot_generation": "PO Token 生成失败，正在自动重试",
         }
         recovery_message = recovery_messages.get(
             recovery_reason,
@@ -640,7 +640,7 @@ class Downloader(QObject):
         )
         self.output_received.emit(
             task_id,
-            f"{recovery_message}，正在自动重试（第 {retry_count + 1}/{total_attempts} 次尝试）...",
+            f"{recovery_message}（{retry_count + 1}/{total_attempts}）...",
         )
         process.deleteLater()
         new_process.start(args[0], args[1:])
@@ -1030,6 +1030,12 @@ class Downloader(QObject):
     
     def _format_platform_error(self, error, platform, url, exit_code):
         """根据平台类型格式化错误信息，提供用户友好的提示"""
+
+        error_lower = error.lower()
+
+        # 登录验证不是可恢复的 DNS/下载地址故障，需要覆盖此前的重试提示。
+        if "login_required" in error_lower or "sign in to confirm you" in error_lower:
+            return "YouTube 要求登录验证，请检查 Firefox 登录状态或更换 IP"
         
         # 通用错误模式匹配
         if "No video formats found" in error:
@@ -1065,10 +1071,10 @@ class Downloader(QObject):
         elif "HTTP Error 404" in error or "Not Found" in error:
             return "链接不存在或已被删除，请检查URL是否正确"
         
-        elif "network" in error.lower() or "connection" in error.lower():
+        elif "network" in error_lower or "connection" in error_lower:
             return "网络连接错误，请检查：\n1. 网络连接状态\n2. 防火墙设置\n3. 稍后重试"
         
-        elif "timeout" in error.lower():
+        elif "timeout" in error_lower:
             return "请求超时，可能原因：\n1. 网络速度较慢\n2. 服务器响应慢\n建议稍后重试"
         
         # 如果没有匹配的错误模式，返回原始错误信息（简化版）
