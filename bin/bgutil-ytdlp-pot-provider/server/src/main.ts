@@ -1,60 +1,123 @@
-import { SessionManager } from "./session_manager.ts";
+import { InvalidProxyError, SessionManager } from "./session_manager.ts";
 import { strerror, VERSION } from "./utils.ts";
 import { Command } from "commander";
 import express from "express";
+import http from "node:http";
+import net from "node:net";
 
-const program = new Command().option("-p, --port <PORT>").parse();
+function collectHosts(host: string, previous: string[]) {
+    previous.push(
+        ...host
+            .split(",")
+            .map((entry) => entry.trim())
+            .filter(Boolean),
+    );
+    return previous;
+}
 
-const options = program.opts();
+const program = new Command()
+    .option("-p, --port <PORT>")
+    .option(
+        "-H, --host <HOST>",
+        "Host/IP to listen on; repeat or separate with commas to bind multiple addresses",
+        collectHosts,
+        [],
+    )
+    .parse();
 
-const PORT_NUMBER = options.port || 4416;
+const cliOptions = program.opts();
+
+const PORT_NUMBER = cliOptions.port || 4416;
 
 const httpServer = express();
+httpServer.use((request, response, next) => {
+    if (
+        request.get("Origin") ||
+        request.get("Sec-Fetch-Site")?.toLowerCase() === "cross-site"
+    ) {
+        return response.status(403).send({
+            error: "Browser-originated requests are not allowed",
+        });
+    }
+    next();
+});
 httpServer.use(express.json());
-httpServer.use(express.urlencoded({ extended: true }));
 
-httpServer
-    .listen(
-        {
-            host: "::",
-            port: PORT_NUMBER,
-        },
-        (err) => {
-            if (err) {
-                console.error(
-                    `Could not listen on [::]:${PORT_NUMBER}, falling back to 0.0.0.0 (Caused by ${strerror(err)})`,
-                );
-            } else {
-                console.log(
-                    `Started POT server (v${VERSION}) on on address [::]:${PORT_NUMBER}`,
-                );
-            }
-        },
-    )
-    .on("error", () => {
-        // ipv4 only systems might not be able to bind to "::", so we try 0.0.0.0 instead
-        // this is temporary as we plan to bind to localhost in the next major version
-        httpServer.listen(
-            {
-                host: "0.0.0.0",
-                port: PORT_NUMBER,
-            },
-            (err) => {
-                if (err) {
-                    console.error(
-                        `Could not listen on [::]:${PORT_NUMBER} (Caused by ${strerror(err)})`,
-                    );
-                } else {
-                    console.log(
-                        `Started POT server (v${VERSION}) on address 0.0.0.0:${PORT_NUMBER}`,
-                    );
-                }
-            },
-        );
+// Bind the IPv6 and IPv4 localhost addresses as separate sockets, with the
+// IPv6 one restricted to IPv6 so the two never overlap. Every address is
+// optional: a failure is logged, and startup only aborts if nothing could be
+// bound.
+const LISTEN_ADDRESSES: (net.ListenOptions & { host: string })[] = [
+    { host: "::1", ipv6Only: true },
+    { host: "127.0.0.1" },
+];
+
+function getListenAddresses(hosts: string[]) {
+    if (hosts.length === 0) return LISTEN_ADDRESSES;
+    return hosts.map((host) =>
+        host.includes(":") ? { host, ipv6Only: true } : { host },
+    );
+}
+
+function formatAddress(host: string) {
+    return `${host.includes(":") ? `[${host}]` : host}:${PORT_NUMBER}`;
+}
+
+function listen(options: net.ListenOptions): Promise<http.Server> {
+    return new Promise((resolve, reject) => {
+        const server = http.createServer(httpServer);
+        server.once("error", reject);
+        server.listen({ ...options, port: PORT_NUMBER }, () => {
+            server.removeListener("error", reject);
+            resolve(server);
+        });
     });
+}
+
+async function startServer() {
+    const bound: string[] = [];
+    for (const listenOptions of getListenAddresses(cliOptions.host)) {
+        const address = formatAddress(listenOptions.host);
+        try {
+            await listen(listenOptions);
+            bound.push(address);
+        } catch (err) {
+            // Deno ignores `ipv6Only` (and on Windows leaves the OS default of
+            // IPv6-only, #244), so with a dual-stack "::1" socket the 127.0.0.1
+            // bind collides with it. That only means IPv4 is already served.
+            if (err?.code === "EADDRINUSE" && bound.length > 0) continue;
+            console.error(
+                `Could not listen on ${address} (Caused by ${strerror(err)})`,
+            );
+        }
+    }
+    if (bound.length === 0) {
+        console.error(`Could not listen on port ${PORT_NUMBER}`);
+        process.exit(1);
+    }
+    console.log(
+        `Started POT server (v${VERSION}) on address ${bound.join(", ")}`,
+    );
+}
+
+startServer();
 
 const sessionManager = new SessionManager();
+httpServer.get("/", async (request, response) => {
+    response
+        .status(400)
+        .send(
+            "This server is not meant to be accessed directly unless you know what you're doing. Follow the README for plugin/provider setup, and yt-dlp will automatically use the provider: https://github.com/Brainicism/bgutil-ytdlp-pot-provider#readme",
+        );
+});
+
 httpServer.post("/get_pot", async (request, response) => {
+    if (!request.is("application/json")) {
+        return response.status(415).send({
+            error: "Content-Type must be application/json",
+        });
+    }
+
     const body = request.body || {};
     if (body.data_sync_id)
         return response.status(400).send({
@@ -90,8 +153,10 @@ httpServer.post("/get_pot", async (request, response) => {
         response.send(sessionData);
     } catch (e) {
         const msg = strerror(e, /*update=*/ true);
-        console.error(e.stack);
-        response.status(500).send({ error: msg });
+        if (!(e instanceof InvalidProxyError)) console.error(e.stack);
+        response.status(e instanceof InvalidProxyError ? 400 : 500).send({
+            error: msg,
+        });
     }
 });
 

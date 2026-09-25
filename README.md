@@ -1,97 +1,42 @@
 # YT-DLP GUI for Windows
 
-![软件界面截图](screenshots/main.png)
-![软件界面截图](screenshots/main-2.png)
+![软件界面](screenshots/main.png)
+![播放列表界面](screenshots/main-2.png)
 
-一个简单易用的 YouTube 视频下载工具，基于著名开源工具 yt-dlp 开发的 Windows 图形界面程序。
+这是一个基于 yt-dlp 的 Windows 视频下载软件，支持单个或多个视频、YouTube 播放列表与频道下载，也支持选择画质、提取 MP3 和下载字幕。
 
-## 主要功能
+## 下载与使用
 
-- 支持下载单个或多个 YouTube 视频
-- 支持下载 YouTube 播放列表和频道
-- 自动下载最高画质（比如8K），可选4K、1080P、480P画质
-- 支持下载 MP3 格式的纯音频
-- 支持下载字幕（.srt格式）
-- 自动使用火狐浏览器 cookies 实现登录下载
-- 支持订阅播放列表
-- 可以跳过已下载视频（播放列表/频道下载模式），只下载新增内容
+1. 从 [Releases](https://github.com/luluyayawawa123/yt-dlp-gui-windows/releases) 下载绿色版，解压后运行 `YT-DLP-GUI-Windows.exe`。绿色版文件夹可以移动或改名，但请保留其中的 `bin` 目录。
+2. 普通下载：先在 Firefox 中登录 YouTube，再把视频链接粘贴到主窗口。多个链接每行填一个；选好保存位置、画质和字幕后，点击“开始下载”。
+3. 播放列表/频道下载：切换到对应窗口，输入播放列表或频道链接。可勾选“跳过曾经下载过的视频”，下次只下载新增内容。
 
-## 系统要求
+普通下载可选择最高画质、MP4 画质、MP3，或临时兜底的“斗地主模式”。实际能下载的清晰度取决于视频、网络和 YouTube 返回的格式，并非每个视频都有 4K。
 
-- Windows 10/11
-- Firefox 浏览器（必需）
-- 网络连接
+## 当前 YouTube 下载方式
 
-## 下载和安装
+| 模式 | 客户端 | Firefox Cookies | 说明 |
+| --- | --- | --- | --- |
+| 普通下载 | mweb | 使用 | 通过内置 bgutil 组件获取 PO Token，可下载分离的视频和音频。 |
+| 播放列表/频道 | mweb | 不使用 | 同样获取 PO Token，但匿名请求可能被 YouTube 要求登录。 |
+| 斗地主模式（普通下载中的临时兜底） | web_safari | 使用 | 不获取 PO Token，尝试下载最高 1080P 的 HLS 流；部分视频可能没有可用流。 |
 
-1. 从 [Releases](https://github.com/luluyayawawa123/yt-dlp-gui-windows/releases) 页面下载最新版本
-2. 解压到任意位置
-3. 运行 YT-DLP-GUI-Windows.exe
+普通下载已完成开发版 4K 和绿色版的实际下载测试。播放列表暂未改成传入 Cookies 的方案，只是因为还没来得及测试，并不表示匿名下载更好。此前，不传 Cookies 的 mweb 在 GCP 出口 IP 下可以下载，在 Linode 美国出口 IP 下稳定失败；另一次测试还在生成 PO Token 前就收到 `LOGIN_REQUIRED`，要求登录确认不是机器人。Firefox 即使已经登录，播放列表也不会自动读取它的 Cookies。后续计划见 [软件待办事项](软件待办事项.txt)。
 
-## 使用方法
+普通下载勾选“下载字幕”后，会尝试下载作者字幕并转换为 SRT；“斗地主模式”还会尝试下载自动生成的字幕。具体能下载哪些字幕，取决于视频和 YouTube 的返回结果。
 
-1. **单个视频下载**
-   - 复制 YouTube 视频链接
-   - 粘贴到软件的 URL 输入框（支持多个链接，每行一个）
-   - 选择下载位置
-   - 选择画质（默认最高画质）或选择 MP3 格式下载纯音频
-   - 点击"开始下载"
+## 运行环境与更新
 
-2. **播放列表/频道下载**
-   - 点击"切换到播放列表/频道下载模式"
-   - 输入播放列表或频道 URL
-   - 选择下载选项
-   - 点击"开始下载"
+- 支持 Windows 10/11。普通下载和“斗地主模式”需要 Firefox，且应先在浏览器中登录 YouTube；播放列表模式目前不读取浏览器 Cookies。
+- 绿色版已包含 yt-dlp、FFmpeg、Deno 和 PO Token 组件，使用者不需要另行安装这些运行组件。
+- `bin/更新Nightly内核.bat` 更新 yt-dlp Nightly；`bin/更新stable内核.bat` 更新稳定版。它们**只更新 yt-dlp 内核**，不会更新 bgutil 插件、脚本或 Deno。
+- PO Token 组件的配套更新方法见 [维护说明](bin/bgutil-ytdlp-pot-provider%20维护说明.txt)。
 
+## 下载失败时
 
-典型使用场景示例：
-1. **订阅你喜欢的 YouTube 频道**
-   ```
-   https://www.youtube.com/@YourFavoriteChannel/videos
-   ```
-   下载频道中的所有视频。
+- 提示 `LOGIN_REQUIRED` / `Sign in to confirm you’re not a bot`：YouTube 要求登录验证，并非 PO Token 生成失败。普通下载先检查 Firefox 是否仍处于登录状态；播放列表目前不读取 Cookies，可能需要更换出口 IP 后重试。
+- 已取得格式或 Token，却在下载媒体时收到 `HTTP 403`：先试软件的“下载重试”；若仍失败，请查看完整日志。更新 yt-dlp 或 PO Token 组件也不能保证消除所有 403。
+- 提示 DNS 解析失败：检查网络、VPN、代理和 DNS 设置。这与 Token 生成失败是两回事。
+- 需要临时获取视频时，可试普通下载中的“斗地主模式”；若视频没有可用 HLS 流，该模式也可能失败。
 
-2. **订阅你自己创建的播放列表**
-   ```
-   https://www.youtube.com/playlist?list=YOUR_PLAYLIST_ID
-   ```
-   在 YouTube APP 或网页版中创建自己的播放列表，将想要下载的视频添加到该播放列表中，
-   然后复制该播放列表的链接，粘贴到软件的播放列表模式中，保存到收藏夹。下载的时候，勾选"跳过曾经下载过的视频"选项，只下载新增的视频内容。
-
-## 注意事项
-
-- 目前 YouTube 不支持游客观看视频，所以请先在 Firefox 中登录 YouTube/Google 账号
-- 需要使用 Firefox 浏览器（安装版，不支持便携版）
-- 下载位置请选择有足够空间的磁盘
-
-## ⚠️ 重要提示
-
-**如果遇到YouTube视频下载失败，请第一时间运行更新内核！**
-
-📍 **更新内核文件位置**: `软件目录/bin/更新内核.bat`
-
-- YouTube经常更新反爬虫机制，旧版本yt-dlp会失效
-- 双击运行 `bin/更新内核.bat` 可将yt-dlp更新到最新版本
-- 这能解决大部分下载失败问题，建议遇到问题时优先尝试
-- 推荐定期更新内核保持最佳兼容性
-
-## 常见问题
-
-Q: 为什么一定要用 Firefox？  
-A: Firefox 对 YouTube 视频下载支持最好，能够正确处理需要登录的视频。
-
-Q: 下载失败怎么办？  
-A: **⚠️ 重要：如果遇到YouTube视频下载失败的错误提示，请第一时间双击运行 `软件目录/bin/更新内核.bat` 更新yt-dlp内核到最新版本！**
-
-请按以下步骤检查：
-1. **首先运行 `软件目录/bin/更新内核.bat` 更新内核**（这能解决大部分下载问题）
-2. 检查网络连接是否正常
-3. 确保Firefox已登录YouTube账号
-4. 确认视频可以在浏览器中正常播放
-5. 检查下载路径是否有写入权限
-6. 重启程序再次尝试
-
-**⭐ 特别说明：**  
-- YouTube经常更新其反爬虫机制，导致旧版本的yt-dlp无法正常工作
-- `bin/更新内核.bat` 会将yt-dlp更新到最新版本，通常能解决大部分下载失败问题  
-- 建议定期运行此脚本保持内核为最新版本 
+问题背景和上游修复记录见 [PO Token 跟踪事项](YouTube上游PO%20Token修复跟踪事项.txt)。

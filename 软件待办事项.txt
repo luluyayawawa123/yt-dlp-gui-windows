@@ -1,0 +1,5 @@
+待办：完善播放列表下载
+
+普通下载目前使用 mweb + Firefox Cookies + PO Token，已经可以正常下载。播放列表还没来得及改；以后要按普通下载的做法，也传入 Firefox Cookies。
+
+播放列表目前不传 Cookies。实测 GCP IP 可以下载，Linode 美国 IP 稳定失败；在某些 IP 下，还会在生成 PO Token 前提示“登录以确认不是机器人”（LOGIN_REQUIRED）。
