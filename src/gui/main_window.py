@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                             QTextEdit, QFileDialog, QLabel, QComboBox,
                             QProgressBar, QSizePolicy, QFrame, QMessageBox,
                             QScrollArea, QMenu, QGroupBox, QCheckBox)
-from PyQt6.QtCore import Qt, QProcess, QEvent, pyqtSignal
+from PyQt6.QtCore import Qt, QProcess, QEvent, QSignalBlocker, pyqtSignal
 from PyQt6.QtGui import QTextCursor, QFont, QIcon
 import os
 import datetime
@@ -15,6 +15,7 @@ from core.youtube_pot import (
     prewarm_youtube_pot,
 )
 from gui.log_window import LogWindow
+from gui.subtitle_selector import SubtitleSelectorCheckBox
 import sys
 from PyQt6.QtWidgets import QApplication
 import re
@@ -419,15 +420,17 @@ class MainWindow(QMainWindow):
             "仅MP3音频",
             "斗地主模式"
         ])
-        saved_quality = self.config.config.get('quality_index', 0)
+        saved_quality = self.config.config.get(
+            'main_quality_index',
+            self.config.config.get('quality_index', 0),
+        )
         if 0 <= saved_quality <= 6:
             self.quality_combo.setCurrentIndex(saved_quality)
         self.quality_combo.currentIndexChanged.connect(self._save_quality_setting)
+        self.config.quality_index_changed.connect(self._sync_quality_setting)
 
         # 添加字幕下载选项
-        self.subtitle_checkbox = QCheckBox("下载字幕")
-        self.subtitle_checkbox.setChecked(False)  # 默认不勾选
-        self.subtitle_checkbox.setToolTip("下载视频的所有可用字幕(srt格式)")
+        self.subtitle_checkbox = SubtitleSelectorCheckBox("下载字幕", self.config)
 
         # 添加播放列表下载按钮
         self.playlist_button = QPushButton("切换到播放列表/频道模式")
@@ -498,8 +501,15 @@ class MainWindow(QMainWindow):
         
     def _save_quality_setting(self, index):
         """保存画质选择到配置"""
-        self.config.config['quality_index'] = index
-        self.config.save_config()
+        self.config.set_main_quality_index(index)
+
+    def _sync_quality_setting(self, index):
+        """接收播放列表窗口的通用画质变更。"""
+        if not 0 <= index <= 5 or self.quality_combo.currentIndex() == index:
+            return
+        blocker = QSignalBlocker(self.quality_combo)
+        self.quality_combo.setCurrentIndex(index)
+        del blocker
 
     def update_history_display(self):
         """更新下载历史显示"""
@@ -874,7 +884,9 @@ class MainWindow(QMainWindow):
         if self.subtitle_checkbox.isChecked():
             format_options.update({
                 'writesubtitles': True,
-                'subtitlesformat': 'srt'
+                'subtitlesformat': 'srt',
+                'subtitle_language_groups': self.subtitle_checkbox.selected_groups(),
+                'subtitle_all_languages': self.subtitle_checkbox.all_languages_selected(),
             })
         
         self._queue_download_request(urls, output_path, format_options, browser)

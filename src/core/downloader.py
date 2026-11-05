@@ -1,9 +1,26 @@
-from PyQt6.QtCore import QObject, QProcess, pyqtSignal, QProcessEnvironment
+from PyQt6.QtCore import QObject, QProcess, QTimer, pyqtSignal, QProcessEnvironment
 import shlex
 import sys
 import os
 import logging
 from .config import Config
+from .youtube_recovery import (
+    MAX_YOUTUBE_RECOVERY_RETRIES,
+    RECOVERY_MESSAGES,
+    classify_recoverable_youtube_failure,
+    extract_failure_detail,
+    failure_title,
+    recovery_total_attempts,
+    should_retry_youtube_failure,
+)
+from .subtitle_selection import (
+    build_subtitle_download_args,
+    build_subtitle_only_retry_args,
+    build_subtitle_probe_args,
+    parse_subtitle_metadata,
+    select_subtitle_languages,
+)
+from .youtube_pot import extract_youtube_video_id, invalidate_cached_youtube_pot
 from pathlib import Path
 import winreg  # 添加这行到文件顶部
 import glob
@@ -93,7 +110,7 @@ class Downloader(QObject):
         }
 
     # 首次下载加 5 次自动恢复，合计最多尝试 6 次。
-    _MAX_YOUTUBE_RECOVERY_RETRIES = 5
+    _MAX_YOUTUBE_RECOVERY_RETRIES = MAX_YOUTUBE_RECOVERY_RETRIES
         
     def reset_state(self):
         """重置下载器状态"""
@@ -334,6 +351,7 @@ class Downloader(QObject):
 
     def start_download(self, url, output_path, format_options, browser):
         """开始下载"""
+        task_id = "未知任务"
         try:
             # 检测平台并获取配置
             platform = self.detect_platform(url)
@@ -464,16 +482,23 @@ class Downloader(QObject):
                     "--postprocessor-args", "-codec:a libmp3lame"  # 使用 LAME 编码器
                 ])
 
+            subtitle_probe_args = None
             # 添加字幕下载选项
             if format_options.get('writesubtitles'):
-                args.append("--write-subs")         # 下载作者字幕
-                if youtube_hls_fallback:
-                    # 斗地主模式作为临时兜底，同时保留 YouTube 自动字幕。
-                    args.append("--write-auto-subs")
-                args.extend([
-                    "--sub-langs", "all",          # 下载所有语言的字幕
-                    "--convert-subs", "srt"        # 转换为 srt 格式
-                ])
+                all_languages = bool(format_options.get('subtitle_all_languages'))
+                if all_languages:
+                    args.extend(build_subtitle_download_args(
+                        all_languages=True,
+                        allow_automatic=youtube_hls_fallback,
+                    ))
+                else:
+                    groups = tuple(format_options.get('subtitle_language_groups') or ())
+                if not all_languages and groups:
+                    subtitle_probe_args = build_subtitle_probe_args(
+                        url=url,
+                        special_args=special_args,
+                        browser=browser if requires_cookies else None,
+                    )
 
             # 添加输出模板
             output_template = os.path.join(output_path, "%(title)s.%(ext)s")
@@ -485,14 +510,25 @@ class Downloader(QObject):
             # 记录完整命令（用于调试）
             self.config.log(f"执行命令: {' '.join(args)}", logging.DEBUG)
             
-            process = self._create_download_process(
-                task_id=task_id,
-                url=url,
-                output_path=output_path,
-                args=args,
-            )
-            process.start(args[0], args[1:])
-            self.processes.append(process)
+            if subtitle_probe_args:
+                self._start_subtitle_probe(
+                    task_id=task_id,
+                    url=url,
+                    output_path=output_path,
+                    download_args=args,
+                    probe_args=[str(self.ytdlp_path), *subtitle_probe_args],
+                    groups=groups,
+                    allow_automatic=youtube_hls_fallback,
+                )
+            else:
+                process = self._create_download_process(
+                    task_id=task_id,
+                    url=url,
+                    output_path=output_path,
+                    args=args,
+                )
+                process.start(args[0], args[1:])
+                self.processes.append(process)
             return True
             
         except Exception as e:
@@ -500,6 +536,109 @@ class Downloader(QObject):
             self.config.log(error_msg, logging.ERROR)
             self.download_finished.emit(False, error_msg, "未知视频", task_id)
             return False
+
+    def _start_subtitle_probe(
+        self,
+        task_id,
+        url,
+        output_path,
+        download_args,
+        probe_args,
+        groups,
+        allow_automatic,
+    ):
+        """异步读取字幕清单，避免阻塞 GUI。"""
+        process = QProcess()
+        process.setProcessEnvironment(self.env)
+        process.setWorkingDirectory(output_path)
+        process.setProperty("task_id", task_id)
+        process.setProperty("url", url)
+        process.setProperty("working_directory", output_path)
+        process.setProperty("download_args", download_args)
+        process.setProperty("subtitle_groups", list(groups))
+        process.setProperty("allow_automatic", bool(allow_automatic))
+        process.setProperty("cancel_requested", False)
+        process.setProperty("probe_timed_out", False)
+        process._subtitle_probe_timer = QTimer(process)
+        process._subtitle_probe_timer.setSingleShot(True)
+        process._subtitle_probe_timer.timeout.connect(
+            lambda current=process: self._subtitle_probe_timeout(current)
+        )
+        process.finished.connect(
+            lambda exit_code, exit_status, current=process: self._subtitle_probe_finished(
+                current,
+                exit_code,
+                exit_status,
+            )
+        )
+        self.processes.append(process)
+        self.output_received.emit(task_id, "正在读取可用字幕清单...")
+        process.start(probe_args[0], probe_args[1:])
+        process._subtitle_probe_timer.start(120_000)
+
+    @staticmethod
+    def _subtitle_probe_timeout(process):
+        if process.state() == QProcess.ProcessState.Running:
+            process.setProperty("probe_timed_out", True)
+            process.kill()
+
+    def _subtitle_probe_finished(self, process, exit_code, _exit_status):
+        """选择每类最优字幕后启动真正下载。"""
+        if process.property("cancel_requested"):
+            if process in self.processes:
+                self.processes.remove(process)
+            process.deleteLater()
+            return
+
+        task_id = process.property("task_id")
+        process._subtitle_probe_timer.stop()
+        download_args = list(process.property("download_args") or ())
+        stdout = process.readAllStandardOutput().data().decode("utf-8", errors="replace")
+        stderr = process.readAllStandardError().data().decode("utf-8", errors="replace")
+
+        if exit_code == 0:
+            try:
+                subtitles, automatic = parse_subtitle_metadata(stdout)
+                selection = select_subtitle_languages(
+                    subtitles,
+                    automatic,
+                    process.property("subtitle_groups") or (),
+                    allow_automatic=bool(process.property("allow_automatic")),
+                )
+                for message in selection.messages:
+                    self.output_received.emit(task_id, f"字幕选择：{message}")
+                download_args[-1:-1] = build_subtitle_download_args(
+                    selection.languages,
+                    allow_automatic=bool(process.property("allow_automatic")),
+                )
+            except Exception as exc:
+                self.output_received.emit(
+                    task_id,
+                    f"字幕清单解析失败，继续下载视频：{exc}",
+                )
+        else:
+            if process.property("probe_timed_out"):
+                detail = "读取字幕清单超时（120 秒）"
+            else:
+                details = (stderr or stdout).strip().splitlines()
+                detail = details[-1] if details else "未知错误"
+            self.output_received.emit(
+                task_id,
+                f"字幕清单读取失败，继续下载视频：{detail}",
+            )
+
+        new_process = self._create_download_process(
+            task_id=task_id,
+            url=process.property("url"),
+            output_path=process.property("working_directory"),
+            args=download_args,
+        )
+        if process in self.processes:
+            self.processes[self.processes.index(process)] = new_process
+        else:
+            self.processes.append(new_process)
+        process.deleteLater()
+        new_process.start(download_args[0], download_args[1:])
         
     def cancel_download(self):
         """取消所有正在进行的下载"""
@@ -520,6 +659,8 @@ class Downloader(QObject):
         process.setProperty("title", "未知视频")
         process.setProperty("title_set", False)
         process.setProperty("retry_count", 0)
+        process.setProperty("subtitle_retry_used", False)
+        process.setProperty("subtitle_only_retry", False)
         process.setProperty("saw_download_progress", False)
         process.setProperty("cancel_requested", False)
         process.setProperty("command_args", args)
@@ -546,40 +687,7 @@ class Downloader(QObject):
     @staticmethod
     def _classify_youtube_failure(output, error):
         """识别能够安全自动恢复的 YouTube 故障类型。"""
-        combined = f"{output}\n{error}".lower()
-
-        if "http error 403" in combined and (
-            "googlevideo.com/videoplayback" in combined
-            or "unable to download video data" in combined
-        ):
-            return "media_403"
-
-        if any(marker in combined for marker in (
-            "failed to resolve",
-            "getaddrinfo failed",
-            "errno 11002",
-        )):
-            return "dns_resolution"
-
-        if (
-            "generate_once.ts" in combined
-            and "--version" in combined
-            and any(marker in combined for marker in (
-                "timed out after",
-                "timeoutexpired",
-                "failed to check script version",
-            ))
-        ):
-            return "pot_startup"
-
-        if any(marker in combined for marker in (
-            "failed while generating pot",
-            "error fetching po token",
-            "failed to generate an integrity token",
-        )):
-            return "pot_generation"
-
-        return None
+        return classify_recoverable_youtube_failure(output, error)
 
     def _get_youtube_recovery_reason(self, process, output, error):
         """返回当前 YouTube 失败的恢复类型；不应恢复时返回 None。"""
@@ -590,26 +698,40 @@ class Downloader(QObject):
         if platform != "youtube":
             return None
 
-        retry_count = int(process.property("retry_count") or 0)
-        if retry_count >= self._MAX_YOUTUBE_RECOVERY_RETRIES:
-            return None
-
         reason = self._classify_youtube_failure(output, error)
-        if reason in {"pot_startup", "pot_generation"} and process.property(
-            "saw_download_progress"
-        ):
-            return None
-        return reason
+        if reason == "subtitle_download":
+            retry_count = 1 if process.property("subtitle_retry_used") else 0
+        else:
+            retry_count = int(process.property("retry_count") or 0)
+        return reason if should_retry_youtube_failure(
+            reason,
+            retry_count,
+            bool(process.property("saw_download_progress")),
+        ) else None
 
     def _restart_process(self, process, recovery_reason):
         """使用原参数自动补救重试。"""
-        args = process.property("command_args")
+        args = list(process.property("command_args") or ())
         if not args:
             return False
 
-        retry_count = int(process.property("retry_count") or 0) + 1
+        retry_count = int(process.property("retry_count") or 0)
+        subtitle_retry_used = bool(process.property("subtitle_retry_used"))
         task_id = process.property("task_id")
         title = process.property("title") or "未知视频"
+
+        if recovery_reason == "subtitle_download":
+            args = build_subtitle_only_retry_args(args)
+            subtitle_retry_used = True
+            video_id = extract_youtube_video_id(process.property("url") or "")
+            if video_id:
+                refreshed, refresh_message = invalidate_cached_youtube_pot(video_id)
+                if not refreshed:
+                    self.output_received.emit(task_id, f"⚠️ {refresh_message}")
+            attempt_number = 2
+        else:
+            retry_count += 1
+            attempt_number = retry_count + 1
 
         new_process = self._create_download_process(
             task_id=task_id,
@@ -618,6 +740,11 @@ class Downloader(QObject):
             args=args,
         )
         new_process.setProperty("retry_count", retry_count)
+        new_process.setProperty("subtitle_retry_used", subtitle_retry_used)
+        new_process.setProperty(
+            "subtitle_only_retry",
+            recovery_reason == "subtitle_download" or bool(process.property("subtitle_only_retry")),
+        )
         new_process.setProperty("title", title)
         new_process.setProperty("title_set", bool(process.property("title_set")))
 
@@ -627,20 +754,14 @@ class Downloader(QObject):
         else:
             self.processes.append(new_process)
 
-        total_attempts = self._MAX_YOUTUBE_RECOVERY_RETRIES + 1
-        recovery_messages = {
-            "media_403": "HTTP 403，正在自动重试",
-            "dns_resolution": "DNS 解析失败，正在自动重试",
-            "pot_startup": "PO Token 组件启动超时，正在自动重试",
-            "pot_generation": "PO Token 生成失败，正在自动重试",
-        }
-        recovery_message = recovery_messages.get(
+        total_attempts = recovery_total_attempts(recovery_reason)
+        recovery_message = RECOVERY_MESSAGES.get(
             recovery_reason,
             "YouTube 下载失败，正在自动恢复",
         )
         self.output_received.emit(
             task_id,
-            f"{recovery_message}（{retry_count + 1}/{total_attempts}）...",
+            f"{recovery_message}（{attempt_number}/{total_attempts}）...",
         )
         process.deleteLater()
         new_process.start(args[0], args[1:])
@@ -1033,6 +1154,13 @@ class Downloader(QObject):
 
         error_lower = error.lower()
 
+        if "did not get any data blocks" in error_lower and any(marker in error_lower for marker in (
+            "_write_subtitles",
+            "writing video subtitles to:",
+            "unable to download video subtitles",
+        )):
+            return failure_title("subtitle_download")
+
         # 登录验证不是可恢复的 DNS/下载地址故障，需要覆盖此前的重试提示。
         if "login_required" in error_lower or "sign in to confirm you" in error_lower:
             return "YouTube 要求登录验证，请检查 Firefox 登录状态或更换 IP"
@@ -1080,17 +1208,10 @@ class Downloader(QObject):
         # 如果没有匹配的错误模式，返回原始错误信息（简化版）
         else:
             # 提取关键错误信息，过滤掉技术细节
-            error_lines = error.strip().split('\n')
-            key_error = None
-            for line in error_lines:
-                if "ERROR:" in line:
-                    key_error = line.replace("ERROR:", "").strip()
-                    break
-            
-            if key_error:
+            key_error = extract_failure_detail("", error)
+            if key_error != "下载进程异常退出":
                 return f"下载失败：{key_error}"
-            else:
-                return f"下载失败 (退出码: {exit_code})\n建议检查链接或稍后重试"
+            return f"下载失败 (退出码: {exit_code})\n建议检查链接或稍后重试"
 
     def _get_safari_cookies(self):
         """获取Safari浏览器的cookies"""

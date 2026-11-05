@@ -60,6 +60,7 @@ class YouTubeDownloadConfigTests(unittest.TestCase):
                     "format": "b[height<=1080][protocol^=m3u8]",
                     "youtube_hls_fallback": True,
                     "writesubtitles": True,
+                    "subtitle_all_languages": True,
                 },
                 "firefox",
             )
@@ -82,7 +83,11 @@ class YouTubeDownloadConfigTests(unittest.TestCase):
             started = self.downloader.start_download(
                 "https://www.youtube.com/watch?v=rY65wFcjdDM",
                 output_path,
-                {"format": "bv*+ba", "writesubtitles": True},
+                {
+                    "format": "bv*+ba",
+                    "writesubtitles": True,
+                    "subtitle_all_languages": True,
+                },
                 "firefox",
             )
 

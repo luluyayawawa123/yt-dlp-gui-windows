@@ -11,7 +11,7 @@ Provider server：bin/bgutil-ytdlp-pot-provider/server/
 插件 ZIP：bin/yt-dlp-plugins/bgutil-ytdlp-pot-provider.zip
 Deno：bin/deno.exe
 
-server 与插件必须版本配套，不要只替换其中一个，也不要单独升级 bgutils-js。PO Token 并不能保证消除所有 403，也无法保证绕过 YouTube 的登录验证；问题背景见项目根目录《YouTube上游PO Token修复跟踪事项.txt》。
+server 与插件必须版本配套，不要只替换其中一个，也不要单独升级 bgutils-js。PO Token 并不能保证消除所有 403，也无法保证绕过 YouTube 的登录验证；问题背景见项目根目录《YouTube下载技术与问题研究记录.txt》。
 
 二、升级方法
 ------------
@@ -33,5 +33,5 @@ build.py 会在绿色版的打包目录中重建可迁移的 node_modules。因�
 --------------
 1. 确认 verbose 日志中的 bgutil:script-deno 版本与 server/package.json 一致。
 2. 在普通模式获取视频格式和 PO Token，并完成一次实际下载。
-3. 播放列表目前不传 Firefox Cookies；如果出现 LOGIN_REQUIRED，先检查是否在生成 Token 前就被要求登录，不要直接归咎于组件故障。后续改进见根目录《软件待办事项.txt》。
+3. 普通下载和播放列表均传入 Firefox Cookies；如果出现 LOGIN_REQUIRED，先检查 Firefox 登录状态以及错误是否发生在生成 Token 之前，不要直接归咎于组件故障。播放列表新方案的实测事项见根目录《软件开发待办事项.txt》。
 4. 打包后给绿色版文件夹改名，分别检查首次下载和再次下载。

@@ -1,0 +1,76 @@
+YouTube 下载技术与问题研究记录
+最近更新：2026-11-05
+
+文档用途
+
+本文件用于技术交接。以后 YouTube、yt-dlp 或 PO Token 组件发生变化时，技术人员或 AI 应先阅读本文件，再结合当次完整日志和官方最新资料继续研究。本文记录的是当前软件实际采用的方案、历史问题、已验证结论和后续研究入口；当前事实最终以代码和实际日志为准。
+
+一、当前下载方案
+
+普通下载：mweb + Firefox Cookies + bgutil PO Token。
+完整链条：Firefox 登录信息 → yt-dlp 的 mweb 客户端 → bgutil Provider 插件 → Deno 运行 generate_once.ts → bgutils-js/BotGuard 生成 PO Token → yt-dlp 获取视频与音频地址 → FFmpeg 合并。
+
+普通下载开始新任务时，会清除该视频的旧 Token 缓存并预热 Deno/bgutil；手动点击“下载重试”时保留现有 Token，重新解析下载地址并断点续传。当前方案已通过开发版 4K 下载和重新打包后的绿色版实际测试。
+
+播放列表/频道：mweb + Firefox Cookies + bgutil PO Token。软件先读取列表，再逐条下载；每个新视频都会清除一次自己的旧 Token 缓存。媒体 403、DNS 解析失败、PO Token 启动超时或生成失败会触发重新解析和断点续传，首次加自动恢复最多尝试 6 次；同一视频自动恢复时保留现有 Token。登录验证或 Cookies 不可用会停止整个列表，其他视频最终失败后记录原因并继续下一个。
+
+播放列表支持按语言选择作者字幕，并分别统计视频和字幕结果。正常下载模式下，字幕失败后会刷新 Token，再进行一次仅字幕补救；“仅下载字幕，不下载视频”模式最多尝试 6 次，从第 2 次开始每次刷新当前视频的 PO Token。该选项只属于播放列表，不影响普通下载模式。视频加字幕和仅下载字幕均已通过 13 条播放列表的开发版实测。
+
+普通下载中的“斗地主模式”：web_safari + Firefox Cookies + HLS，不使用 PO Token，最高尝试下载 1080P；勾选字幕时也会尝试自动字幕。它只是高画质方案失效时的临时兜底。
+
+当前内置组件：
+yt-dlp Nightly：2026.09.16.232951
+bgutil-ytdlp-pot-provider server：2.0.0
+bgutil-ytdlp-pot-provider 插件：2.0.0
+bgutils-js：4.0.3
+Deno：2.9.7
+
+二、历史问题与解决结果
+
+旧版曾出现两类主要问题：
+
+1. BotGuard VM operation timed out
+旧版 web_creator + Firefox Cookies 在生成 PO Token 时出现过 VM 超时。该问题不能与媒体下载阶段的 HTTP 403 混为一谈。
+
+2. 已生成 PO Token，但下载媒体时返回 HTTP 403
+bgutil Issue #242 最终定位到 BotGuard challenge 与同一次 YouTube 首页会话中的 ytcfg/EVENT_ID 没有正确对应。BgUtils #44 和 bgutil PR #243 修复了相关逻辑，随后官方发布 bgutil 2.0.0。本项目曾提前应用该修复验证，之后已改用官方 2.0.0 整套组件，不再保留本地补丁。
+
+相关记录：
+https://github.com/Brainicism/bgutil-ytdlp-pot-provider/issues/242
+https://github.com/LuanRT/BgUtils/pull/44
+https://github.com/Brainicism/bgutil-ytdlp-pot-provider/pull/243
+https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/tag/2.0.0
+
+三、常见故障必须分开判断
+
+LOGIN_REQUIRED / “Sign in to confirm you’re not a bot”
+这是 YouTube 要求登录验证，通常发生在生成 PO Token 之前，不等于 Token 生成失败。普通下载和播放列表都应先确认 Firefox 已登录 YouTube。历史实测中，不带 Cookies 的 mweb 在 GCP 出口 IP 下可以下载，在 Linode 美国出口 IP 下稳定失败；其他测试也收到过 LOGIN_REQUIRED，因此播放列表后来改为与普通下载一样传入 Firefox Cookies。出口 IP 仍可能影响下载，但不能据此认定 IP 是唯一原因。
+
+PO Token 生成失败
+应查看 bgutil/BotGuard 给出的底层错误，例如 TIMEOUT、脚本不可用或组件版本不匹配。只升级 yt-dlp 不一定能解决 Provider 自身的问题。
+
+媒体 HTTP 403
+指已经取得格式和下载地址，但 googlevideo 媒体请求被拒绝。软件会重新解析地址并尝试断点续传，但重试不保证成功。新版再次出现 403 时，应保存完整日志，不能直接认定为旧版 Issue #242 复发。
+
+DNS 解析失败
+属于网络、代理、VPN 或 DNS 问题，与登录验证和 Token 生成是不同故障。
+
+四、以后出现问题时怎么研究
+
+1. 保存从 Command-line config 开始到最终报错为止的完整 verbose 日志。
+2. 先判断失败发生在哪一阶段：读取网页、登录验证、生成 Token、解析格式、下载媒体、合并文件。
+3. 记录当时的 yt-dlp、Provider、bgutils-js、Deno 版本，以及使用的客户端、Cookies 状态和出口网络。
+4. 使用同一个视频做对照测试；不要因为某一次成功或失败就认定方案永久有效。
+5. 优先查看官方发布、官方文档和已有 Issues，不凭猜测修改客户端或 Token 逻辑。
+6. 更新 Provider 时，server 与插件 ZIP 必须使用同一版本；不要只替换其中一个，也不要随意单独升级 bgutils-js。
+7. 修改后至少验证普通下载、字幕、播放列表和重新打包的绿色版。
+
+重点关注入口：
+yt-dlp 发布：https://github.com/yt-dlp/yt-dlp/releases
+yt-dlp PO Token 指南：https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide
+yt-dlp YouTube Issues：https://github.com/yt-dlp/yt-dlp/issues?q=is%3Aissue%20youtube%20PO%20Token
+bgutil 官方发布：https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases
+bgutil Issues：https://github.com/Brainicism/bgutil-ytdlp-pot-provider/issues
+BgUtils：https://github.com/LuanRT/BgUtils
+本项目反馈主帖：https://github.com/yt-dlp/yt-dlp/issues/17368
+

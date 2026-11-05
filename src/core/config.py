@@ -4,9 +4,15 @@ import logging
 from pathlib import Path
 from datetime import datetime
 import sys
+from PyQt6.QtCore import QObject, pyqtSignal
 
-class Config:
+class Config(QObject):
+    quality_index_changed = pyqtSignal(int)
+    subtitle_enabled_changed = pyqtSignal(bool)
+    subtitle_options_changed = pyqtSignal()
+
     def __init__(self):
+        super().__init__()
         # 获取程序运行目录
         if getattr(sys, 'frozen', False):
             # PyInstaller打包后的运行目录
@@ -86,6 +92,38 @@ class Config:
                 }
             }
             self.save_config()
+
+        changed = False
+        quality_index = self.config.get('quality_index', 0)
+        if not isinstance(quality_index, int) or not 0 <= quality_index <= 6:
+            quality_index = 0
+            self.config['quality_index'] = 0
+            changed = True
+
+        if quality_index == 6:
+            # 斗地主模式只属于普通下载；播放列表保留通用画质。
+            self.config.setdefault('main_quality_index', 6)
+            self.config['quality_index'] = 0
+            changed = True
+        elif 'main_quality_index' not in self.config:
+            self.config['main_quality_index'] = quality_index
+            changed = True
+
+        main_quality_index = self.config.get('main_quality_index', quality_index)
+        if not isinstance(main_quality_index, int) or not 0 <= main_quality_index <= 6:
+            self.config['main_quality_index'] = self.config['quality_index']
+            changed = True
+
+        if 'subtitle_download_enabled' not in self.config:
+            self.config['subtitle_download_enabled'] = False
+            changed = True
+
+        if 'playlist_subtitle_only' not in self.config:
+            self.config['playlist_subtitle_only'] = False
+            changed = True
+
+        if changed:
+            self.save_config()
             
     def save_config(self):
         try:
@@ -96,4 +134,42 @@ class Config:
             # 成功写入后才替换原文件
             temp_file.replace(self.config_file)
         except Exception as e:
-            print(f"保存配置文件失败: {e}") 
+            print(f"保存配置文件失败: {e}")
+
+    def set_quality_index(self, index):
+        """保存两个模式共用的画质，并通知所有已打开窗口。"""
+        if not isinstance(index, int) or not 0 <= index <= 5:
+            return
+        changed = (
+            self.config.get('quality_index') != index
+            or self.config.get('main_quality_index') != index
+        )
+        if not changed:
+            return
+        self.config['quality_index'] = index
+        self.config['main_quality_index'] = index
+        self.save_config()
+        self.quality_index_changed.emit(index)
+
+    def set_main_quality_index(self, index):
+        """保存普通模式画质；斗地主模式不覆盖播放列表的通用画质。"""
+        if index != 6:
+            self.set_quality_index(index)
+            return
+        if self.config.get('main_quality_index') == 6:
+            return
+        self.config['main_quality_index'] = 6
+        self.save_config()
+
+    def set_subtitle_enabled(self, enabled):
+        """保存共用字幕开关，并通知两个窗口实时同步。"""
+        enabled = bool(enabled)
+        if self.config.get('subtitle_download_enabled') == enabled:
+            return
+        self.config['subtitle_download_enabled'] = enabled
+        self.save_config()
+        self.subtitle_enabled_changed.emit(enabled)
+
+    def notify_subtitle_options_changed(self):
+        """通知其他字幕控件刷新共享语言状态。"""
+        self.subtitle_options_changed.emit()

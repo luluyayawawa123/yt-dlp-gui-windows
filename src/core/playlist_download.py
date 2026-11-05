@@ -4,11 +4,14 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
+from .youtube_recovery import RECOVERABLE_FAILURES
 
-# 播放列表与普通下载模式保持一致：mweb + PO Token，不读取账户 Cookies。
+
+# 播放列表与普通下载模式保持一致：mweb + Firefox Cookies + PO Token。
 PLAYLIST_CLIENT = "mweb"
+SUBTITLE_ONLY_MAX_ATTEMPTS = 6
 _POT_CLIENTS = {"mweb", "web_creator"}
-_COOKIE_CLIENTS = {"web_creator"}
+_COOKIE_CLIENTS = {"mweb", "web_creator"}
 _WINDOWS_RESERVED_NAMES = {
     "CON", "PRN", "AUX", "NUL",
     *(f"COM{i}" for i in range(1, 10)),
@@ -81,12 +84,21 @@ def playlist_client_requires_cookies(client: str = PLAYLIST_CLIENT) -> bool:
     return client in _COOKIE_CLIENTS
 
 
+def should_retry_subtitle_only_failure(reason: str | None, retry_count: int) -> bool:
+    """仅字幕模式总共最多尝试六次。"""
+    return (
+        reason in RECOVERABLE_FAILURES
+        and retry_count < SUBTITLE_ONLY_MAX_ATTEMPTS - 1
+    )
+
+
 def build_playlist_item_args(
     item: PlaylistItem,
     common_args: Iterable[str],
     output_template: str,
     pot_server_home: str,
     browser: str = "firefox",
+    subtitle_args: Iterable[str] = (),
 ) -> list[str]:
     """为单个播放列表条目构建当前固定客户端参数。"""
     args = [item.url, "--no-playlist", *common_args]
@@ -102,6 +114,7 @@ def build_playlist_item_args(
     args.extend([
         "--extractor-args",
         f"youtube:player_client={PLAYLIST_CLIENT}",
+        *subtitle_args,
         "--verbose",
         "-o",
         output_template,

@@ -1,17 +1,37 @@
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, 
                            QPushButton, QLineEdit, QLabel, QMessageBox, QTextEdit, QHBoxLayout, QFileDialog, QComboBox, QCheckBox, QDialog,
                            QStyle, QSizePolicy, QApplication)
-from PyQt6.QtCore import Qt, QProcess, QProcessEnvironment, pyqtSignal
+from PyQt6.QtCore import Qt, QProcess, QProcessEnvironment, QSignalBlocker, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon
 from .saved_urls_dialog import SavedURLsDialog
+from .subtitle_selector import SubtitleSelectorCheckBox
 from core.youtube_pot import invalidate_cached_youtube_pot, prewarm_youtube_pot
+from core.youtube_recovery import (
+    MAX_YOUTUBE_RECOVERY_RETRIES,
+    RECOVERY_MESSAGES,
+    classify_youtube_failure,
+    extract_failure_detail,
+    failure_advice,
+    failure_title,
+    recovery_total_attempts,
+    should_retry_youtube_failure,
+)
 from core.playlist_download import (
     PLAYLIST_CLIENT,
+    SUBTITLE_ONLY_MAX_ATTEMPTS,
     build_playlist_item_args,
     parse_playlist_metadata,
     playlist_client_requires_cookies,
     playlist_client_requires_pot,
     safe_playlist_folder_name,
+    should_retry_subtitle_only_failure,
+)
+from core.subtitle_selection import (
+    build_subtitle_download_args,
+    build_subtitle_only_retry_args,
+    build_subtitle_probe_args,
+    parse_subtitle_metadata,
+    select_subtitle_languages,
 )
 import os
 import logging
@@ -22,9 +42,14 @@ from bs4 import BeautifulSoup
 from pathlib import Path
 import threading
 
+
+SUBTITLE_RETRY_DELAY_MS = 1500
+
 class PlaylistWindow(QMainWindow):
     youtube_prewarm_finished = pyqtSignal(bool, str)
     playlist_extraction_finished = pyqtSignal(bool, object, str)
+    playlist_extraction_retry = pyqtSignal(str)
+    subtitle_probe_finished = pyqtSignal(str, object, str)
 
     def __init__(self, config, parent=None):
         super().__init__()
@@ -36,8 +61,14 @@ class PlaylistWindow(QMainWindow):
         self._prewarm_in_progress = False
         self._playlist_extraction_in_progress = False
         self._playlist_extract_process = None
+        self._subtitle_probe_process = None
+        self._subtitle_probe_in_progress = False
         self._playlist_metadata = None
         self._playlist_item_index = 0
+        self._item_recovery_count = 0
+        self._subtitle_recovery_count = 0
+        self._process_subtitle_only = False
+        self._process_is_subtitle_retry = False
         self._saw_download_progress = False
         self._cancel_requested = False
         self._last_process_output = ""
@@ -45,6 +76,8 @@ class PlaylistWindow(QMainWindow):
         self._output_auto_scroll = True
         self.youtube_prewarm_finished.connect(self._handle_youtube_prewarm_finished)
         self.playlist_extraction_finished.connect(self._handle_playlist_extraction_finished)
+        self.playlist_extraction_retry.connect(self._handle_playlist_extraction_retry)
+        self.subtitle_probe_finished.connect(self._handle_subtitle_probe_finished)
         self._reset_download_tracking()
         self.setup_ui()
         
@@ -154,13 +187,16 @@ class PlaylistWindow(QMainWindow):
         if 0 <= saved_quality <= 5:
             self.quality_combo.setCurrentIndex(saved_quality)
         self.quality_combo.currentIndexChanged.connect(self._save_quality_setting)
+        self.config.quality_index_changed.connect(self._sync_quality_setting)
         quality_layout.addWidget(quality_label)
         quality_layout.addWidget(self.quality_combo)
 
         # 添加字幕下载选项
-        self.subtitle_checkbox = QCheckBox("下载字幕(.srt格式)")
-        self.subtitle_checkbox.setChecked(False)  # 默认不勾选
-        self.subtitle_checkbox.setToolTip("下载视频的所有可用字幕并转换为srt格式")
+        self.subtitle_checkbox = SubtitleSelectorCheckBox(
+            "下载字幕(.srt格式)",
+            self.config,
+            subtitle_only_config_key="playlist_subtitle_only",
+        )
         quality_layout.addWidget(self.subtitle_checkbox)
 
         quality_layout.addStretch()  # 添加弹性空间
@@ -178,7 +214,7 @@ class PlaylistWindow(QMainWindow):
             self.config.config.get('playlist_resilient_retry', True)
         )
         self.resilient_retry_checkbox.setToolTip(
-            "遇到网络抖动会自动退避重试，成功率更高，但失败时等待会稍长"
+            "额外启用请求和分片退避重试；403、DNS 和 PO Token 故障的自动恢复始终开启"
         )
         self.resilient_retry_checkbox.stateChanged.connect(self._save_resilient_retry_setting)
         archive_layout.addWidget(self.resilient_retry_checkbox)
@@ -314,8 +350,15 @@ class PlaylistWindow(QMainWindow):
         
     def _save_quality_setting(self, index):
         """保存画质选择到配置"""
-        self.config.config['quality_index'] = index
-        self.config.save_config()
+        self.config.set_quality_index(index)
+
+    def _sync_quality_setting(self, index):
+        """接收普通下载窗口的通用画质变更。"""
+        if not 0 <= index <= 5 or self.quality_combo.currentIndex() == index:
+            return
+        blocker = QSignalBlocker(self.quality_combo)
+        self.quality_combo.setCurrentIndex(index)
+        del blocker
 
     def _save_resilient_retry_setting(self, state):
         """保存播放列表模式的稳健重试开关"""
@@ -348,6 +391,10 @@ class PlaylistWindow(QMainWindow):
         self.total_items_expected = 0
         self.stdout_buffer = ""
         self.stderr_buffer = ""
+        self._item_recovery_count = 0
+        self._subtitle_recovery_count = 0
+        self._process_subtitle_only = False
+        self._process_is_subtitle_retry = False
 
     def _ensure_item_state(self, video_id, title=None):
         """确保视频条目状态存在并返回状态字典"""
@@ -363,6 +410,12 @@ class PlaylistWindow(QMainWindow):
                 "stage": "",
                 "reason_code": "",
                 "reason_text": "",
+                "video_status": "unknown",
+                "video_reason_code": "",
+                "video_reason_text": "",
+                "subtitle_status": "not_requested",
+                "subtitle_reason_code": "",
+                "subtitle_reason_text": "",
                 "pending_retry_exhausted": False,
                 "seen_merger": False,
                 "final_merged": False,
@@ -402,6 +455,15 @@ class PlaylistWindow(QMainWindow):
         title = re.sub(r'\.f\d+(?:-\d+)?$', '', title)
         return title.strip() or None
 
+    @staticmethod
+    def _is_subtitle_path(path_text):
+        """判断日志中的路径是否为字幕文件。"""
+        cleaned = (path_text or "").split(" (pass -k", 1)[0].strip().strip('"')
+        return bool(re.search(
+            r"\.(?:srt|vtt|ass|lrc|sbv|sub|ttml)(?:\s|$)",
+            cleaned.lower(),
+        ))
+
     def _mark_item_failed(self, video_id, reason_code, reason_text, stage):
         """标记条目失败"""
         state = self._ensure_item_state(video_id)
@@ -413,6 +475,14 @@ class PlaylistWindow(QMainWindow):
         state["reason_text"] = (reason_text or "").strip()[:300]
         state["stage"] = stage
         state["pending_retry_exhausted"] = False
+        if stage == "subtitle":
+            state["subtitle_status"] = "failed"
+            state["subtitle_reason_code"] = reason_code
+            state["subtitle_reason_text"] = (reason_text or "").strip()[:300]
+        else:
+            state["video_status"] = "failed"
+            state["video_reason_code"] = reason_code
+            state["video_reason_text"] = (reason_text or "").strip()[:300]
 
     def _mark_item_completed(self, video_id, merged=False):
         """标记条目成功完成"""
@@ -424,10 +494,22 @@ class PlaylistWindow(QMainWindow):
         state["pending_retry_exhausted"] = False
         state["reason_code"] = ""
         state["reason_text"] = ""
+        state["video_status"] = "ok"
+        state["video_reason_code"] = ""
+        state["video_reason_text"] = ""
         if merged:
             state["seen_merger"] = True
             state["final_merged"] = True
             state["stage"] = "merge"
+
+    def _set_subtitle_status(self, video_id, status, reason_code="", reason_text=""):
+        """单独记录字幕结果，避免字幕失败覆盖视频成功状态。"""
+        state = self._ensure_item_state(video_id)
+        if not state:
+            return
+        state["subtitle_status"] = status
+        state["subtitle_reason_code"] = reason_code
+        state["subtitle_reason_text"] = (reason_text or "").strip()[:300]
 
     def _mark_retry_exhausted_pending(self, video_id, reason_text):
         """标记达到重试上限，等待后续判断是否真正失败"""
@@ -530,6 +612,23 @@ class PlaylistWindow(QMainWindow):
             self.current_merging_id = None
             return
 
+        lower = line.lower()
+        if "there are no subtitles for the requested languages" in lower:
+            if self.current_item_id:
+                self._set_subtitle_status(
+                    self.current_item_id,
+                    "unavailable",
+                    "subtitle_unavailable",
+                    "没有所选语言的作者字幕",
+                )
+            return
+
+        if "downloading subtitles:" in lower or "writing video subtitles to:" in lower:
+            if self.current_item_id:
+                state = self._ensure_item_state(self.current_item_id)
+                if state and state.get("subtitle_status") != "unavailable":
+                    self._set_subtitle_status(self.current_item_id, "pending")
+
         if '[download] Destination: ' in line:
             path_text = line.split('[download] Destination: ', 1)[-1].strip()
             video_id = self._extract_video_id(path_text)
@@ -553,11 +652,21 @@ class PlaylistWindow(QMainWindow):
             return
 
         if line.startswith('Deleting original file '):
-            video_id = self._extract_video_id(line)
+            path_text = line.split('Deleting original file ', 1)[-1]
+            video_id = self._extract_video_id(path_text)
             if video_id:
-                self._mark_item_completed(video_id, merged=True)
-                if self.current_merging_id == video_id:
-                    self.current_merging_id = None
+                if self._is_subtitle_path(path_text):
+                    self._set_subtitle_status(video_id, "ok")
+                else:
+                    self._mark_item_completed(video_id, merged=True)
+                    if self.current_merging_id == video_id:
+                        self.current_merging_id = None
+            return
+
+        if 'has already been downloaded' in line and self._is_subtitle_path(line):
+            video_id = self._extract_video_id(line) or self.current_item_id
+            if video_id:
+                self._set_subtitle_status(video_id, "ok")
             return
 
         if 'has already been downloaded and merged' in line:
@@ -578,8 +687,15 @@ class PlaylistWindow(QMainWindow):
                 self._mark_item_failed(video_id, "retries_exhausted", line, "download")
             return
 
-        lower = line.lower()
-        if is_error or 'error:' in lower:
+        # yt-dlp 会把大量正常的 verbose/debug 信息写入 stderr，例如字幕转换时的
+        # ``[debug] ffmpeg command line``。stderr 只代表输出通道，不能直接视为失败；
+        # 这里只处理日志内容本身明确表明失败的行。
+        explicit_error = (
+            'error:' in lower
+            or lower.startswith('error ')
+            or 'conversion failed' in lower
+        )
+        if explicit_error:
             target_id = self.current_merging_id or self.current_item_id
             if not target_id:
                 return
@@ -591,10 +707,38 @@ class PlaylistWindow(QMainWindow):
             elif 'error:' in lower:
                 self._mark_item_failed(target_id, "download_failed", line, "download")
 
-    def _format_failure_reason(self, state):
+    def _format_failure_reason(self, state, result_type=None):
         """将失败状态格式化为用户可读原因"""
-        code = state.get("reason_code")
-        raw_text = state.get("reason_text", "")
+        if result_type == "video":
+            code = state.get("video_reason_code")
+            raw_text = state.get("video_reason_text", "")
+        elif result_type == "subtitle":
+            code = state.get("subtitle_reason_code")
+            raw_text = state.get("subtitle_reason_text", "")
+        else:
+            code = state.get("reason_code")
+            raw_text = state.get("reason_text", "")
+        if code == "subtitle_download":
+            total_attempts = (
+                SUBTITLE_ONLY_MAX_ATTEMPTS
+                if self._active_download_start
+                and self._active_download_start.get("subtitle_only_mode")
+                else recovery_total_attempts(code)
+            )
+            return f"{failure_title(code)}（{total_attempts}次尝试均失败）"
+        if code == "subtitle_probe_failed":
+            return f"字幕清单读取失败：{raw_text or '无法读取可用字幕'}"
+        if code in {
+            "login_required",
+            "cookies_unavailable",
+            "media_403",
+            "dns_resolution",
+            "pot_startup",
+            "pot_generation",
+            "format_unavailable",
+            "video_unavailable",
+        }:
+            return failure_title(code)
         if code == "retries_exhausted":
             return "下载失败：网络读取不完整，重试达到上限（10/10）"
         if code == "merge_failed":
@@ -604,35 +748,114 @@ class PlaylistWindow(QMainWindow):
         return f"失败：{raw_text or '未知错误'}"
 
     def _append_download_summary(self):
-        """在任务结束后追加失败摘要"""
+        """分别汇总视频与字幕结果。"""
         sorted_states = sorted(self.item_states.values(), key=lambda x: x["order"])
-        failed_items = [state for state in sorted_states if state.get("status") == "failed"]
-        ok_items = [state for state in sorted_states if state.get("status") == "ok"]
-
         observed_total = len(self.item_states)
         total_count = self.total_items_expected if self.total_items_expected > 0 else observed_total
-        failed_count = len(failed_items)
-        success_count = len(ok_items)
-        unknown_count = max(total_count - success_count - failed_count, 0)
+        video_ok = [state for state in sorted_states if state.get("video_status") == "ok"]
+        video_failed = [state for state in sorted_states if state.get("video_status") == "failed"]
+        video_unknown_count = max(total_count - len(video_ok) - len(video_failed), 0)
 
+        subtitle_only_mode = bool(
+            self._active_download_start
+            and self._active_download_start.get("subtitle_only_mode")
+        )
         summary_lines = [
             "",
             "========== 下载结果摘要 ==========",
-            f"总条目: {total_count}，成功: {success_count}，失败: {failed_count}"
+            f"总视频：{total_count}",
         ]
-        if unknown_count > 0:
-            summary_lines.append(f"未判定: {unknown_count}（日志可能被截断或缺少关键行）")
+        if subtitle_only_mode:
+            summary_lines.append("视频：未下载（仅下载字幕模式）")
+        else:
+            summary_lines.append(f"视频：成功 {len(video_ok)}，失败 {len(video_failed)}")
+            if video_unknown_count > 0:
+                summary_lines.append(f"视频未判定：{video_unknown_count}")
 
-        if failed_items:
-            summary_lines.append("失败条目：")
-            for state in failed_items:
-                title = state.get("title") or state["id"]
-                reason = self._format_failure_reason(state)
-                summary_lines.append(f"- [{state['id']}] {title}：{reason}")
-            summary_lines.append(
-                "建议：对同一播放列表再次执行下载，并勾选“跳过曾经下载过的视频”。"
-                "程序会跳过已完成条目，优先补齐本次失败条目。"
+        subtitle_enabled = bool(
+            self._active_download_start
+            and self._active_download_start.get("write_subtitles")
+        )
+        subtitle_failed = []
+        if subtitle_enabled:
+            subtitle_ok = [
+                state for state in sorted_states if state.get("subtitle_status") == "ok"
+            ]
+            subtitle_unavailable = [
+                state for state in sorted_states
+                if state.get("subtitle_status") == "unavailable"
+            ]
+            subtitle_failed = [
+                state for state in sorted_states if state.get("subtitle_status") == "failed"
+            ]
+            subtitle_known_count = (
+                len(subtitle_ok) + len(subtitle_unavailable) + len(subtitle_failed)
             )
+            subtitle_unknown_count = max(total_count - subtitle_known_count, 0)
+            summary_lines.append(
+                f"字幕：成功 {len(subtitle_ok)}，失败 {len(subtitle_failed)}"
+            )
+            if subtitle_unavailable:
+                summary_lines.append(
+                    f"未匹配到字幕：{len(subtitle_unavailable)}"
+                )
+            if subtitle_unknown_count > 0:
+                summary_lines.append(f"字幕未判定：{subtitle_unknown_count}")
+
+        if video_failed:
+            summary_lines.append("视频失败条目：")
+            for state in video_failed:
+                title = state.get("title") or state["id"]
+                reason = self._format_failure_reason(state, "video")
+                summary_lines.append(f"- [{state['id']}] {title}：{reason}")
+
+        if subtitle_failed:
+            summary_lines.append("字幕失败条目：")
+            for state in subtitle_failed:
+                title = state.get("title") or state["id"]
+                reason = self._format_failure_reason(state, "subtitle")
+                summary_lines.append(f"- [{state['id']}] {title}：{reason}")
+
+        if subtitle_enabled:
+            subtitle_unavailable = [
+                state for state in sorted_states
+                if state.get("subtitle_status") == "unavailable"
+            ]
+            if subtitle_unavailable:
+                summary_lines.append("未匹配到字幕的条目：")
+                for state in subtitle_unavailable:
+                    title = state.get("title") or state["id"]
+                    summary_lines.append(
+                        f"- [{state['id']}] {title}：没有所选语言的作者字幕"
+                    )
+
+        if video_failed or subtitle_failed:
+            summary_lines.append("处理建议：")
+            advice_codes = []
+            for state in video_failed:
+                code = state.get("video_reason_code") or "download_failed"
+                if code == "retries_exhausted":
+                    code = "download_failed"
+                if code not in advice_codes:
+                    advice_codes.append(code)
+            for state in subtitle_failed:
+                code = state.get("subtitle_reason_code") or "subtitle_download"
+                if code == "subtitle_probe_failed":
+                    code = "subtitle_download"
+                if code not in advice_codes:
+                    advice_codes.append(code)
+            for code in advice_codes:
+                summary_lines.append(f"- {failure_advice(code)}")
+            if subtitle_failed:
+                summary_lines.append(
+                    "可重新执行同一播放列表；已有同名视频不会被覆盖，"
+                    "程序会再次尝试补齐字幕。"
+                )
+            elif video_failed:
+                summary_lines.append(
+                    "修复后可重新执行同一播放列表，并勾选“跳过曾经下载过的视频”，"
+                    "程序会跳过已完成条目。"
+                )
         else:
             summary_lines.append("本次下载未发现失败条目。")
 
@@ -718,16 +941,22 @@ class PlaylistWindow(QMainWindow):
                 "--no-overwrites",
             ]
             
-            # 如果勾选了字幕下载，添加字幕相关参数
+            # “全部字幕”可直接交给 yt-dlp；按语言优选则在每个条目解析后精确添加。
+            subtitle_groups = ()
+            subtitle_all_languages = False
             if self.subtitle_checkbox.isChecked():
-                common_args.extend([
-                    "--write-subs",      # 下载字幕
-                    "--sub-langs", "all", # 下载所有语言的字幕  
-                    "--convert-subs", "srt" # 转换为 srt 格式
-                ])
+                subtitle_groups = self.subtitle_checkbox.selected_groups()
+                subtitle_all_languages = self.subtitle_checkbox.all_languages_selected()
+                if not subtitle_all_languages and not subtitle_groups:
+                    QMessageBox.warning(self, "字幕设置", "请至少选择一种字幕语言。")
+                    return
+            subtitle_only_mode = bool(
+                self.subtitle_checkbox.isChecked()
+                and self.subtitle_checkbox.subtitle_only_selected()
+            )
             
             # 根据复选框状态决定是否使用断点续传
-            if self.archive_checkbox.isChecked():
+            if self.archive_checkbox.isChecked() and not subtitle_only_mode:
                 common_args.extend(["--download-archive", archive_file])
 
             # 稳健重试参数：平衡成功率与等待体验
@@ -765,6 +994,11 @@ class PlaylistWindow(QMainWindow):
                 "output_path": output_path,
                 "url": url,
                 "pot_server_home": pot_server_home,
+                "write_subtitles": self.subtitle_checkbox.isChecked(),
+                "subtitle_groups": subtitle_groups,
+                "subtitle_all_languages": subtitle_all_languages,
+                "subtitle_only_mode": subtitle_only_mode,
+                "subtitle_tags_by_video_id": {},
             }
 
             if (
@@ -784,6 +1018,19 @@ class PlaylistWindow(QMainWindow):
     def cancel_download(self):
         """取消当前播放列表下载或预热。"""
         self._cancel_requested = True
+
+        if self._subtitle_probe_in_progress:
+            self._subtitle_probe_in_progress = False
+            probe_process = self._subtitle_probe_process
+            if probe_process and probe_process.poll() is None:
+                probe_process.terminate()
+            self._subtitle_probe_process = None
+            self._pending_download_start = None
+            self._active_download_start = None
+            self.status_label.setText("已取消")
+            self._set_download_button_idle()
+            self.back_button.setEnabled(True)
+            return
 
         if self._playlist_extraction_in_progress:
             self._playlist_extraction_in_progress = False
@@ -888,7 +1135,7 @@ class PlaylistWindow(QMainWindow):
             logging.error(f"处理错误输出时出错: {str(e)}", exc_info=True)
     
     def download_finished(self, exit_code, exit_status):
-        """处理固定 web_creator 客户端的当前播放列表条目。"""
+        """处理当前播放列表条目的完成、恢复或失败。"""
         logging.info(f"下载进程结束 - 退出码: {exit_code}, 状态: {exit_status}")
         self._flush_stream_buffers()
 
@@ -904,19 +1151,171 @@ class PlaylistWindow(QMainWindow):
         item = metadata.items[self._playlist_item_index]
         if exit_code == 0:
             state = self._ensure_item_state(item.video_id, item.title)
-            self._mark_item_completed(item.video_id, merged=bool(state and state.get("seen_merger")))
-            self._append_output_log(f"✅ 下载完成（客户端：{PLAYLIST_CLIENT}）")
+            task_subtitle_only = bool(
+                self._active_download_start.get("subtitle_only_mode")
+            )
+            if not task_subtitle_only:
+                self._mark_item_completed(
+                    item.video_id,
+                    merged=bool(state and state.get("seen_merger")),
+                )
+            if (
+                self._process_subtitle_only
+                and state
+                and state.get("subtitle_status") == "pending"
+            ):
+                self._set_subtitle_status(item.video_id, "ok")
+            elif (
+                self._active_download_start.get("write_subtitles")
+                and state
+                and state.get("subtitle_status") == "pending"
+            ):
+                self._set_subtitle_status(item.video_id, "ok")
+            if task_subtitle_only:
+                self._append_output_log(f"✅ 字幕下载完成（客户端：{PLAYLIST_CLIENT}）")
+            elif self._process_subtitle_only:
+                self._append_output_log(f"✅ 字幕补救完成（客户端：{PLAYLIST_CLIENT}）")
+            else:
+                self._append_output_log(f"✅ 下载完成（客户端：{PLAYLIST_CLIENT}）")
             self._advance_playlist_item()
             return
 
-        combined = f"{self._last_process_output}\n{self._last_process_error}"
+        failure_code = classify_youtube_failure(
+            self._last_process_output,
+            self._last_process_error,
+        )
+        task_subtitle_only = bool(
+            self._active_download_start.get("subtitle_only_mode")
+        )
+        if task_subtitle_only:
+            retry_count = self._subtitle_recovery_count
+            can_recover = should_retry_subtitle_only_failure(
+                failure_code,
+                retry_count,
+            )
+        elif self._process_is_subtitle_retry:
+            can_recover = False
+        else:
+            if failure_code == "subtitle_download":
+                retry_count = self._subtitle_recovery_count
+                can_recover = should_retry_youtube_failure(
+                    failure_code,
+                    retry_count,
+                    self._saw_download_progress,
+                )
+            else:
+                retry_count = self._item_recovery_count
+                can_recover = should_retry_youtube_failure(
+                    failure_code,
+                    retry_count,
+                    self._saw_download_progress,
+                )
+
+        if can_recover:
+            if task_subtitle_only:
+                self._subtitle_recovery_count += 1
+                next_attempt = self._subtitle_recovery_count + 1
+                state = self._ensure_item_state(item.video_id, item.title)
+                if state:
+                    state["video_status"] = "not_requested"
+                    state["video_reason_code"] = ""
+                    state["video_reason_text"] = ""
+                self._set_subtitle_status(item.video_id, "pending")
+            elif failure_code == "subtitle_download":
+                self._subtitle_recovery_count += 1
+                next_attempt = self._subtitle_recovery_count + 1
+                state = self._ensure_item_state(item.video_id, item.title)
+                if state:
+                    state["video_status"] = (
+                        "not_requested"
+                        if self._active_download_start.get("subtitle_only_mode")
+                        else "ok"
+                    )
+                    state["video_reason_code"] = ""
+                    state["video_reason_text"] = ""
+                self._set_subtitle_status(item.video_id, "pending")
+            else:
+                self._item_recovery_count += 1
+                next_attempt = self._item_recovery_count + 1
+            total_attempts = (
+                SUBTITLE_ONLY_MAX_ATTEMPTS
+                if task_subtitle_only and failure_code == "subtitle_download"
+                else recovery_total_attempts(failure_code)
+            )
+            message = RECOVERY_MESSAGES.get(
+                failure_code,
+                "YouTube 下载失败，正在重新解析",
+            )
+            self.status_label.setText(
+                f"{message}（{next_attempt}/{total_attempts}）"
+            )
+            self._append_output_log(
+                f"⚠️ {message}"
+                f"{'并断点续传' if failure_code != 'subtitle_download' else ''}"
+                f"（第 {next_attempt}/{total_attempts} 次尝试）..."
+            )
+            state = self._ensure_item_state(item.video_id, item.title)
+            if state:
+                state["status"] = "unknown"
+                state["reason_code"] = ""
+                state["reason_text"] = ""
+                state["pending_retry_exhausted"] = False
+                if failure_code != "subtitle_download":
+                    state["video_status"] = "unknown"
+                    state["video_reason_code"] = ""
+                    state["video_reason_text"] = ""
+            QTimer.singleShot(
+                SUBTITLE_RETRY_DELAY_MS
+                if task_subtitle_only or failure_code == "subtitle_download"
+                else 0,
+                lambda subtitle_only=(
+                    task_subtitle_only or failure_code == "subtitle_download"
+                ):
+                    self._start_active_download_process(
+                        refresh_pot_cache=subtitle_only,
+                        subtitle_only=subtitle_only,
+                    ),
+            )
+            return
+
         state = self._ensure_item_state(item.video_id, item.title)
-        if not state or state.get("reason_code") != "merge_failed":
-            self._mark_item_failed(item.video_id, "download_failed", combined, "download")
+        if (
+            self._process_subtitle_only
+            or not state
+            or state.get("reason_code") != "merge_failed"
+        ):
+            final_code = failure_code or "download_failed"
+            failure_detail = extract_failure_detail(
+                self._last_process_output,
+                self._last_process_error,
+            )
+            if self._process_subtitle_only and state:
+                state["video_status"] = "not_requested"
+                state["video_reason_code"] = ""
+                state["video_reason_text"] = ""
+            self._mark_item_failed(
+                item.video_id,
+                final_code,
+                failure_detail,
+                "subtitle"
+                if self._process_subtitle_only or final_code == "subtitle_download"
+                else "download",
+            )
+        final_reason = self._format_failure_reason(
+            self._ensure_item_state(item.video_id, item.title)
+        )
         self._append_output_log(
-            f"❌ {PLAYLIST_CLIENT} 下载失败，已记录错误并继续下一个视频"
+            f"❌ {final_reason}"
         )
         logging.error(f"播放列表条目下载失败: {item.video_id}, 退出码: {exit_code}")
+
+        if failure_code in {"login_required", "cookies_unavailable"}:
+            self._append_output_log(f"建议：{failure_advice(failure_code)}")
+            self._append_output_log("该问题可能影响整个播放列表，任务已停止。")
+            self._finish_playlist_download()
+            return
+
+        self._append_output_log("已记录错误并继续下一个视频。")
         self._advance_playlist_item()
     
     def back_to_main(self):
@@ -1110,28 +1509,53 @@ class PlaylistWindow(QMainWindow):
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
 
         try:
-            extract_process = subprocess.Popen(
-                command,
-                cwd=pending["output_path"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                creationflags=creationflags,
-            )
-            self._playlist_extract_process = extract_process
-            stdout, stderr = extract_process.communicate(timeout=120)
-            if extract_process.returncode != 0:
-                message = (stderr or stdout).strip().splitlines()[-1]
+            total_attempts = MAX_YOUTUBE_RECOVERY_RETRIES + 1
+            for retry_count in range(total_attempts):
+                if self._cancel_requested:
+                    return
+
+                extract_process = subprocess.Popen(
+                    command,
+                    cwd=pending["output_path"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    creationflags=creationflags,
+                )
+                self._playlist_extract_process = extract_process
+                stdout, stderr = extract_process.communicate(timeout=120)
+                if extract_process.returncode == 0:
+                    metadata = parse_playlist_metadata(stdout)
+                    if not metadata.items:
+                        self.playlist_extraction_finished.emit(
+                            False,
+                            None,
+                            "播放列表中没有可下载的视频",
+                        )
+                        return
+                    self.playlist_extraction_finished.emit(True, metadata, "")
+                    return
+
+                failure_code = classify_youtube_failure(stdout, stderr)
+                if should_retry_youtube_failure(failure_code, retry_count):
+                    message = RECOVERY_MESSAGES.get(
+                        failure_code,
+                        "读取播放列表失败，正在自动重试",
+                    )
+                    self.playlist_extraction_retry.emit(
+                        f"{message}（第 {retry_count + 2}/{total_attempts} 次尝试）..."
+                    )
+                    continue
+
+                if failure_code:
+                    message = f"{failure_title(failure_code)}。{failure_advice(failure_code)}"
+                else:
+                    lines = (stderr or stdout).strip().splitlines()
+                    message = lines[-1] if lines else "未知错误"
                 self.playlist_extraction_finished.emit(False, None, message)
                 return
-
-            metadata = parse_playlist_metadata(stdout)
-            if not metadata.items:
-                self.playlist_extraction_finished.emit(False, None, "播放列表中没有可下载的视频")
-                return
-            self.playlist_extraction_finished.emit(True, metadata, "")
         except subprocess.TimeoutExpired:
             if self._playlist_extract_process:
                 self._playlist_extract_process.kill()
@@ -1140,6 +1564,13 @@ class PlaylistWindow(QMainWindow):
             self.playlist_extraction_finished.emit(False, None, str(exc))
         finally:
             self._playlist_extract_process = None
+
+    def _handle_playlist_extraction_retry(self, message):
+        """在界面中显示播放列表读取阶段的自动恢复状态。"""
+        if not self._playlist_extraction_in_progress or self._cancel_requested:
+            return
+        self.status_label.setText(message.rstrip("."))
+        self._append_output_log(f"⚠️ {message}")
 
     def _handle_playlist_extraction_finished(self, success, metadata, message):
         """接收播放列表信息并启动首个条目。"""
@@ -1173,7 +1604,9 @@ class PlaylistWindow(QMainWindow):
         self._playlist_item_index = 0
         self.total_items_expected = len(metadata.items)
         for item in metadata.items:
-            self._ensure_item_state(item.video_id, item.title)
+            state = self._ensure_item_state(item.video_id, item.title)
+            if pending.get("subtitle_only_mode"):
+                state["video_status"] = "not_requested"
 
         self._append_output_log(
             f"已读取播放列表：{metadata.title}（共 {len(metadata.items)} 个视频）"
@@ -1184,7 +1617,7 @@ class PlaylistWindow(QMainWindow):
         self.config.save_config()
         self._start_active_download_process()
 
-    def _start_active_download_process(self):
+    def _start_active_download_process(self, refresh_pot_cache=True, subtitle_only=False):
         """使用固定 mweb 客户端启动当前播放列表条目。"""
         active = self._active_download_start
         metadata = self._playlist_metadata
@@ -1196,27 +1629,59 @@ class PlaylistWindow(QMainWindow):
             return
 
         item = metadata.items[self._playlist_item_index]
-        if playlist_client_requires_pot():
+        effective_subtitle_only = bool(
+            subtitle_only or active.get("subtitle_only_mode")
+        )
+        state = self._ensure_item_state(item.video_id, item.title)
+        if (
+            active.get("write_subtitles")
+            and state
+            and state.get("subtitle_status") == "not_requested"
+        ):
+            self._set_subtitle_status(item.video_id, "pending")
+        if refresh_pot_cache and playlist_client_requires_pot():
             ok, message = invalidate_cached_youtube_pot(item.video_id)
             if not ok:
                 self._mark_item_failed(
                     item.video_id,
                     "pot_cache_refresh_failed",
                     message,
-                    "initialization",
+                    "subtitle" if effective_subtitle_only else "initialization",
                 )
                 self._append_output_log(f"❌ {message}")
                 logging.error(f"播放列表条目 Token 缓存刷新失败: {item.video_id}, {message}")
-                self._finish_playlist_download()
-                QMessageBox.critical(self, "Token 缓存刷新失败", message)
+                if effective_subtitle_only:
+                    self._advance_playlist_item()
+                else:
+                    self._finish_playlist_download()
+                    QMessageBox.critical(self, "Token 缓存刷新失败", message)
                 return
+
+        if (
+            active.get("write_subtitles")
+            and not active.get("subtitle_all_languages")
+            and active.get("subtitle_groups")
+            and item.video_id not in active["subtitle_tags_by_video_id"]
+        ):
+            self._start_subtitle_probe(item)
+            return
+
+        if active.get("subtitle_all_languages"):
+            subtitle_args = build_subtitle_download_args(all_languages=True)
+        else:
+            subtitle_args = build_subtitle_download_args(
+                active["subtitle_tags_by_video_id"].get(item.video_id, ()),
+            )
 
         args = build_playlist_item_args(
             item=item,
             common_args=active["common_args"],
             output_template=active["output_template"],
             pot_server_home=active["pot_server_home"],
+            subtitle_args=subtitle_args,
         )
+        if effective_subtitle_only:
+            args = build_subtitle_only_retry_args(args)
 
         self._cancel_requested = False
         self.current_item_id = item.video_id
@@ -1226,24 +1691,156 @@ class PlaylistWindow(QMainWindow):
         self._saw_download_progress = False
         self._last_process_output = ""
         self._last_process_error = ""
+        self._process_subtitle_only = effective_subtitle_only
+        self._process_is_subtitle_retry = subtitle_only
 
         current_number = self._playlist_item_index + 1
         total = len(metadata.items)
-        self.total_progress_label.setText(f"正在下载第 {current_number} 个视频，共 {total} 个")
-        self.filename_label.setText(f"准备下载: {item.title}")
-        self.status_label.setText(f"正在使用 {PLAYLIST_CLIENT} 解析视频...")
+        if active.get("subtitle_only_mode"):
+            self.total_progress_label.setText(
+                f"正在处理第 {current_number} 个视频的字幕，共 {total} 个"
+            )
+            self.filename_label.setText(f"准备下载字幕: {item.title}")
+            self.status_label.setText(f"正在使用 {PLAYLIST_CLIENT} 解析字幕...")
+        else:
+            self.total_progress_label.setText(
+                f"正在下载第 {current_number} 个视频，共 {total} 个"
+            )
+            self.filename_label.setText(f"准备下载: {item.title}")
+            self.status_label.setText(f"正在使用 {PLAYLIST_CLIENT} 解析视频...")
         self._append_output_log(
             f"[{current_number}/{total}] {item.title}\n"
             f"固定客户端：{PLAYLIST_CLIENT}"
+            f"{'（仅下载字幕）' if active.get('subtitle_only_mode') else ''}"
         )
         logging.debug(f"播放列表条目下载参数: {args}")
         self.process.start(active["program"], args)
         self._set_download_button_cancel_mode()
         self.back_button.setEnabled(True)
 
+    def _start_subtitle_probe(self, item):
+        """后台读取当前条目的作者字幕清单。"""
+        if self._subtitle_probe_in_progress:
+            return
+
+        active = self._active_download_start
+        if not active:
+            return
+
+        self._subtitle_probe_in_progress = True
+        self.current_item_id = item.video_id
+        self.status_label.setText("正在读取可用字幕清单...")
+        self._append_output_log("正在读取当前视频的作者字幕清单...")
+        threading.Thread(
+            target=self._run_subtitle_probe,
+            args=(item, active),
+            daemon=True,
+        ).start()
+
+    def _run_subtitle_probe(self, item, active):
+        special_args = [
+            "--extractor-args",
+            f"youtubepot-bgutilscript:server_home={active['pot_server_home']}",
+            "--extractor-args",
+            f"youtube:player_client={PLAYLIST_CLIENT}",
+        ]
+        args = build_subtitle_probe_args(
+            item.url,
+            special_args=special_args,
+            browser="firefox" if playlist_client_requires_cookies() else None,
+        )
+        command = [active["program"], *args]
+        env = os.environ.copy()
+        bin_dir = str(Path(active["program"]).parent)
+        env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=active["output_path"],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=creationflags,
+            )
+            self._subtitle_probe_process = process
+            stdout, stderr = process.communicate(timeout=120)
+            if self._cancel_requested:
+                return
+            if process.returncode != 0:
+                lines = (stderr or stdout).strip().splitlines()
+                detail = lines[-1] if lines else "未知错误"
+                self.subtitle_probe_finished.emit(item.video_id, None, detail)
+                return
+
+            subtitles, automatic = parse_subtitle_metadata(stdout)
+            selection = select_subtitle_languages(
+                subtitles,
+                automatic,
+                active.get("subtitle_groups") or (),
+                allow_automatic=False,
+            )
+            self.subtitle_probe_finished.emit(item.video_id, selection, "")
+        except subprocess.TimeoutExpired:
+            if self._subtitle_probe_process:
+                self._subtitle_probe_process.kill()
+            self.subtitle_probe_finished.emit(item.video_id, None, "读取字幕清单超时")
+        except Exception as exc:
+            self.subtitle_probe_finished.emit(item.video_id, None, str(exc))
+        finally:
+            self._subtitle_probe_process = None
+
+    def _handle_subtitle_probe_finished(self, video_id, selection, error):
+        """保存精确字幕标签，然后启动当前条目的媒体下载。"""
+        if not self._subtitle_probe_in_progress or self._cancel_requested:
+            return
+        self._subtitle_probe_in_progress = False
+
+        active = self._active_download_start
+        metadata = self._playlist_metadata
+        if not active or metadata is None:
+            return
+        if self._playlist_item_index >= len(metadata.items):
+            return
+        if metadata.items[self._playlist_item_index].video_id != video_id:
+            return
+
+        if selection is None:
+            active["subtitle_tags_by_video_id"][video_id] = ()
+            self._set_subtitle_status(
+                video_id,
+                "failed",
+                "subtitle_probe_failed",
+                error or "字幕清单读取失败",
+            )
+            self._append_output_log(f"⚠️ 字幕清单读取失败，继续下载视频：{error}")
+        else:
+            active["subtitle_tags_by_video_id"][video_id] = selection.languages
+            if selection.languages:
+                self._set_subtitle_status(video_id, "pending")
+            else:
+                self._set_subtitle_status(
+                    video_id,
+                    "unavailable",
+                    "subtitle_unavailable",
+                    "没有所选语言的作者字幕",
+                )
+            for message in selection.messages:
+                self._append_output_log(f"字幕选择：{message}")
+
+        self._start_active_download_process(refresh_pot_cache=False)
+
     def _advance_playlist_item(self):
         """切换到下一个播放列表条目。"""
         self._playlist_item_index += 1
+        self._item_recovery_count = 0
+        self._subtitle_recovery_count = 0
+        self._process_subtitle_only = False
+        self._process_is_subtitle_retry = False
         self._start_active_download_process()
 
     def _finish_playlist_download(self, cancelled=False):
