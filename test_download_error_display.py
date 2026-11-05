@@ -50,6 +50,49 @@ class _FakeWindow:
 
 
 class DownloadErrorDisplayTests(unittest.TestCase):
+    def test_media_403_and_subtitle_failure_are_both_reported(self):
+        downloader = Downloader()
+        message = downloader._format_platform_error(
+            'ERROR: Did not get any data blocks\n'
+            'File "yt_dlp/YoutubeDL.py", in _write_subtitles\n'
+            'ERROR: unable to download video data: HTTP Error 403: Forbidden',
+            'youtube', 'https://www.youtube.com/watch?v=abc', 1,
+        )
+        self.assertIn('403', message)
+        self.assertIn('视频', message)
+        self.assertIn('字幕也下载失败', message)
+
+    def test_subtitle_only_error_remains_specific(self):
+        message = Downloader()._format_platform_error(
+            'ERROR: Did not get any data blocks\n_write_subtitles',
+            'youtube', 'https://www.youtube.com/watch?v=abc', 1,
+        )
+        self.assertEqual(message, '字幕下载失败：未返回有效数据')
+
+    def test_recovery_event_replaces_stale_speed_without_keyword_matching(self):
+        window = _FakeWindow()
+        task = window.download_tasks['Task-1']
+        task.progress_label.setText('下载进度: 10% 速度: 3MiB/s')
+        message = 'HTTP 403，正在重新解析下载地址并自动重试（2/6）...'
+        MainWindow.update_recovery_status(window, 'Task-1', message)
+        self.assertEqual(task.status_label.text, '正在重试')
+        self.assertIn('2/6', task.progress_label.text)
+        self.assertNotIn('MiB/s', task.progress_label.text)
+
+    def test_internal_retry_emits_recovery_event(self):
+        from PyQt6.QtCore import QByteArray, QProcess
+        downloader = Downloader()
+        process = QProcess()
+        process.setProperty('task_id', 'Task-1')
+        events = []
+        downloader.recovery_updated.connect(lambda task, msg: events.append((task, msg)))
+        downloader._handle_process_output(process, QByteArray(
+            b'[download] Got error: HTTP Error 403: Forbidden. Retrying (1/10)...\n'
+        ))
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0][0], 'Task-1')
+        self.assertIn('403', events[0][1])
+
     def test_login_required_replaces_previous_dns_retry_message(self):
         window = _FakeWindow()
         final_message = "YouTube 要求登录验证；请更换 IP 后重新下载"

@@ -35,11 +35,21 @@ Deno：2.9.7
 2. 已生成 PO Token，但下载媒体时返回 HTTP 403
 bgutil Issue #242 最终定位到 BotGuard challenge 与同一次 YouTube 首页会话中的 ytcfg/EVENT_ID 没有正确对应。BgUtils #44 和 bgutil PR #243 修复了相关逻辑，随后官方发布 bgutil 2.0.0。本项目曾提前应用该修复验证，之后已改用官方 2.0.0 整套组件，不再保留本地补丁。
 
+3. MWeb 只返回 SABR 流，常规格式不可用
+2026-11-02，本项目 Issue #8 的 v1.1.7 日志确认：Firefox Cookies、GVS PO Token 和字幕 PO Token 均获取成功，但 YouTube 对该账号的 mweb 响应只提供 SABR 流，常规 HTTPS 视频、音频格式缺少下载 URL，最终报“Requested format is not available”。这不是 PO Token 生成失败，也不是普通的媒体 HTTP 403。
+
+yt-dlp 官方说明，YouTube 正在对不同账号、会话进行 SABR-only 灰度和 A/B 测试，因此相同视频在不同用户、账号或时间下可能出现不同结果，本地未必能够复现。正式版和 Nightly 目前尚未包含完整的 SABR 下载器。
+
+官方 SABR 下载器 PR #13515 已提供前沿测试版，但截至 2026-11-05 仍未合并，存在代码冲突、部分测试失败及其他未完成问题。后续优先在隔离环境中验证该测试版是否能解决 Issue #8，再决定是否集成到正式软件，不直接覆盖现有可用内核。
+
 相关记录：
 https://github.com/Brainicism/bgutil-ytdlp-pot-provider/issues/242
 https://github.com/LuanRT/BgUtils/pull/44
 https://github.com/Brainicism/bgutil-ytdlp-pot-provider/pull/243
 https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/tag/2.0.0
+https://github.com/luluyayawawa123/yt-dlp-gui-windows/issues/8
+https://github.com/yt-dlp/yt-dlp/issues/12482
+https://github.com/yt-dlp/yt-dlp/pull/13515
 
 三、常见故障必须分开判断
 

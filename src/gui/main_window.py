@@ -85,6 +85,7 @@ class MainWindow(QMainWindow):
         
         # 连接下载器信号
         self.downloader.output_received.connect(self.update_output)
+        self.downloader.recovery_updated.connect(self.update_recovery_status)
         self.downloader.download_finished.connect(self.download_finished)
         self.downloader.title_updated.connect(self.update_task_title)
         
@@ -925,6 +926,16 @@ class MainWindow(QMainWindow):
         except Exception as e:  # 修复这里的语法错误
             QMessageBox.warning(self, "取消失败", f"取消下载时出错：{str(e)}")
         
+    def update_recovery_status(self, task_id, message):
+        """接收明确的恢复事件，不依赖日志文案来判断下载状态。"""
+        task_widget = self.download_tasks.get(task_id)
+        if task_widget is None:
+            return
+        self._set_task_progress_message(task_widget, message)
+        task_widget.status_label.setText("正在重试")
+        task_widget.status_label.setStyleSheet("color: #FF9800;")
+        task_widget.retry_button.hide()
+
     def update_output(self, task_id, message):
         """更新下载进度显示"""
         # 处理原生日志和普通消息

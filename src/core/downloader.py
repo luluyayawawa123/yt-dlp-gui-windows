@@ -31,6 +31,7 @@ class Downloader(QObject):
     output_received = pyqtSignal(str, str)  # task_id, message
     download_finished = pyqtSignal(bool, str, str, str)  # success, message, title, task_id
     title_updated = pyqtSignal(str, str)  # task_id, title
+    recovery_updated = pyqtSignal(str, str)  # task_id, recovery message
     
     def __init__(self):
         super().__init__()
@@ -759,10 +760,9 @@ class Downloader(QObject):
             recovery_reason,
             "YouTube 下载失败，正在自动恢复",
         )
-        self.output_received.emit(
-            task_id,
-            f"{recovery_message}（{attempt_number}/{total_attempts}）...",
-        )
+        message = f"{recovery_message}（{attempt_number}/{total_attempts}）..."
+        self.output_received.emit(task_id, message)
+        self.recovery_updated.emit(task_id, message)
         process.deleteLater()
         new_process.start(args[0], args[1:])
         return True
@@ -798,6 +798,15 @@ class Downloader(QObject):
             # 发送原生日志到日志窗口（在处理之前发送，确保完整性）
             # 这样高级用户可以看到完整的yt-dlp和ffmpeg输出
             self.output_received.emit(task_id, f"[RAW_LOG]{text.rstrip()}")
+
+            # 内核内部重连不会触发进程重启，也必须清除卡片上的旧速度。
+            import re
+            retry_lines = [line.strip() for line in text.splitlines()
+                           if re.search(r'\bRetrying\b', line, re.IGNORECASE)]
+            if retry_lines:
+                self.recovery_updated.emit(
+                    task_id, f"下载连接异常，内核正在重试：{retry_lines[-1]}")
+                return
             
             # 处理下载信息
             if '[download]' in text:
@@ -1153,6 +1162,20 @@ class Downloader(QObject):
         """根据平台类型格式化错误信息，提供用户友好的提示"""
 
         error_lower = error.lower()
+
+        subtitle_failed = "did not get any data blocks" in error_lower and any(
+            marker in error_lower for marker in (
+                "_write_subtitles", "writing video subtitles to:",
+                "unable to download video subtitles",
+            )
+        )
+        media_403 = "http error 403" in error_lower and (
+            "unable to download video data" in error_lower
+            or "googlevideo.com/videoplayback" in error_lower
+        )
+        if media_403:
+            return ("视频下载失败（HTTP 403）；字幕也下载失败"
+                    if subtitle_failed else failure_title("media_403"))
 
         if "did not get any data blocks" in error_lower and any(marker in error_lower for marker in (
             "_write_subtitles",
