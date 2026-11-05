@@ -17,6 +17,8 @@
 
 ## 当前 YouTube 下载方式
 
+v1.1.9 使用 yt-dlp 维护者提供的 SABR 实验内核，尚未合并到上游正式版。原有操作不变，内核根据可用格式和画质要求自动选择传统 HTTPS 或 SABR；不是所有下载都会走 SABR。普通模式已完成 HTTPS 4K 实测，强制 SABR 480P 下载、音视频合并和真实中断续传也已验证。新版内核的播放列表整批 GUI 下载和重新打包绿色版尚需实测，不代表所有账号故障均已解决。
+
 | 模式 | 客户端 | Firefox Cookies | 说明 |
 | --- | --- | --- | --- |
 | 普通下载 | mweb | 使用 | 通过内置 bgutil 组件获取 PO Token，可下载分离的视频和音频。 |
@@ -33,7 +35,7 @@
 
 - 支持 Windows 10/11。普通下载、播放列表和“斗地主模式”均需要 Firefox，且应先在浏览器中登录 YouTube。
 - 绿色版已包含 yt-dlp、FFmpeg、Deno 和 PO Token 组件，使用者不需要另行安装这些运行组件。
-- `bin/更新Nightly内核.bat` 更新 yt-dlp Nightly；`bin/更新stable内核.bat` 更新稳定版。它们**只更新 yt-dlp 内核**，不会更新 bgutil 插件、脚本或 Deno。
+- 使用 `bin/更新SABR内核.bat` 更新 SABR 实验内核。`bin/更新Nightly内核.bat` 用于切换到 Nightly；当前上游尚未合并 SABR，切回后会失去此实验支持。这些脚本**只更新 yt-dlp 内核**，不会更新 bgutil 插件、脚本或 Deno。
 - PO Token 组件的配套更新方法见 [维护说明](bin/bgutil-ytdlp-pot-provider%20维护说明.txt)。
 
 ## 下载失败时

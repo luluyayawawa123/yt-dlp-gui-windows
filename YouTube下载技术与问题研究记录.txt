@@ -19,7 +19,7 @@ YouTube 下载技术与问题研究记录
 普通下载中的“斗地主模式”：web_safari + Firefox Cookies + HLS，不使用 PO Token，最高尝试下载 1080P；勾选字幕时也会尝试自动字幕。它只是高画质方案失效时的临时兜底。
 
 当前内置组件：
-yt-dlp Nightly：2026.09.16.232951
+yt-dlp：v1.1.9 采用 bashonly/yt-dlp@sabr 实验构建 2026.10.27.135913（b7685f01f），2026-11-05 替换。按用户要求，验证后已删除原 Nightly 的临时备份；尚未发布 v1.1.9 Release。
 bgutil-ytdlp-pot-provider server：2.0.0
 bgutil-ytdlp-pot-provider 插件：2.0.0
 bgutils-js：4.0.3
@@ -40,7 +40,14 @@ bgutil Issue #242 最终定位到 BotGuard challenge 与同一次 YouTube 首页
 
 yt-dlp 官方说明，YouTube 正在对不同账号、会话进行 SABR-only 灰度和 A/B 测试，因此相同视频在不同用户、账号或时间下可能出现不同结果，本地未必能够复现。正式版和 Nightly 目前尚未包含完整的 SABR 下载器。
 
-官方 SABR 下载器 PR #13515 已提供前沿测试版，但截至 2026-11-05 仍未合并，存在代码冲突、部分测试失败及其他未完成问题。后续优先在隔离环境中验证该测试版是否能解决 Issue #8，再决定是否集成到正式软件，不直接覆盖现有可用内核。
+官方 SABR 下载器 PR #13515 已提供前沿测试版，但截至 2026-11-05 仍未合并，存在代码冲突、部分测试失败及其他未完成问题。
+
+2026-11-05 本地实验：在 bin 中复制旧内核后，直接替换为维护者 2026-10-27 发布的 SABR 构建，已核验附件 SHA256。客户端、Firefox Cookies、Provider 和软件代码均未改变。
+V5D7ZBeNEUw 实测：原参数通过 HTTPS 完整下载 480P 音视频及英语作者字幕，合并 MP4、转换 SRT 成功；强制 protocol=sabr 后，同样完整下载并合并成功，日志明确显示 Invoking sabr downloader。仅字幕下载成功；斗地主 HLS 小片段下载成功。格式清单同时包含 4K HTTPS 和 SABR，未下载完整 4K 视频。44 项本地回归测试通过。
+Issue #8 样本 bDcpG7rThMw 已能列出 SABR 音视频格式，本次清单最高为 1080P；尚未验证报告者原账号环境。播放列表整批下载和绿色版仍需后续实测，不能据此宣称全部场景已解决。
+2026-11-05 SABR 断点续传实测通过：强制 SABR 480P，在约 15% 时终止测试进程树，再用相同参数和输出文件名重启。日志明确显示音频 140-0、视频 397-0 均 Resuming download，随后完整下载、合并成功；成品经 FFmpeg 全文件解码无错误，SHA256 与此前不中断的 SABR 下载成品完全一致。本次验证的是命令行真实中断续传，不等于已测试 GUI 按钮的全部交互场景。
+2026-11-05 用户普通模式实测 u05nNwhysEM：使用新内核、原 MWeb/Cookies 参数，通过 HTTPS 下载 4K 视频和英语作者字幕，用户确认最终任务完成；提供的阶段日志没有 403 或重试。该结果证明原链路兼容，不等于已验证报告者的 SABR-only 账号故障。
+测试文件和日志已清理，未提交或公开。使用 bin/更新SABR内核.bat 保持实验渠道，切回 Stable/Nightly 会失去本实验构建的 SABR 支持。
 
 相关记录：
 https://github.com/Brainicism/bgutil-ytdlp-pot-provider/issues/242
