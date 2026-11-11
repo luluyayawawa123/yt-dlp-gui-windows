@@ -4,6 +4,17 @@ import re
 
 MAX_YOUTUBE_RECOVERY_RETRIES = 5
 MAX_SUBTITLE_RECOVERY_RETRIES = 1
+MAX_MEDIA_TOKEN_ROUNDS = 3
+MAX_MEDIA_ATTEMPTS_PER_ROUND = 3
+
+
+def next_media_attempt(round_number: int, attempt_number: int):
+    """媒体 403 的下一次尝试；轮次和次数均从 1 开始。"""
+    if attempt_number < MAX_MEDIA_ATTEMPTS_PER_ROUND:
+        return round_number, attempt_number + 1
+    if round_number < MAX_MEDIA_TOKEN_ROUNDS:
+        return round_number + 1, 1
+    return None
 
 RECOVERABLE_FAILURES = frozenset({
     "media_403",

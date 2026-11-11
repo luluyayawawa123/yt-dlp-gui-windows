@@ -12,6 +12,9 @@ from .youtube_recovery import (
     failure_title,
     recovery_total_attempts,
     should_retry_youtube_failure,
+    next_media_attempt,
+    MAX_MEDIA_TOKEN_ROUNDS,
+    MAX_MEDIA_ATTEMPTS_PER_ROUND,
 )
 from .subtitle_selection import (
     build_subtitle_download_args,
@@ -660,6 +663,8 @@ class Downloader(QObject):
         process.setProperty("title", "未知视频")
         process.setProperty("title_set", False)
         process.setProperty("retry_count", 0)
+        process.setProperty("media_round", 1)
+        process.setProperty("media_attempt", 1)
         process.setProperty("subtitle_retry_used", False)
         process.setProperty("subtitle_only_retry", False)
         process.setProperty("saw_download_progress", False)
@@ -700,6 +705,11 @@ class Downloader(QObject):
             return None
 
         reason = self._classify_youtube_failure(output, error)
+        if reason == 'media_403' and self._uses_media_token_rounds(process):
+            return reason if next_media_attempt(
+                int(process.property('media_round') or 1),
+                int(process.property('media_attempt') or 1),
+            ) else None
         if reason == "subtitle_download":
             retry_count = 1 if process.property("subtitle_retry_used") else 0
         else:
@@ -709,6 +719,20 @@ class Downloader(QObject):
             retry_count,
             bool(process.property("saw_download_progress")),
         ) else None
+
+    @staticmethod
+    def _uses_media_token_rounds(process):
+        return not process.property('subtitle_only_retry') and any(
+            'youtubepot-bgutilscript:' in arg
+            for arg in (process.property('command_args') or ())
+        )
+
+    def _announce_media_attempt(self, task_id, round_number, attempt_number):
+        context = (f'第{round_number}/{MAX_MEDIA_TOKEN_ROUNDS}轮 '
+                   f'第{attempt_number}/{MAX_MEDIA_ATTEMPTS_PER_ROUND}次')
+        self.output_received.emit(task_id, f'[ATTEMPT]{context}')
+        self.output_received.emit(task_id, f'{context}：正在解析下载地址')
+        return context
 
     def _restart_process(self, process, recovery_reason):
         """使用原参数自动补救重试。"""
@@ -720,6 +744,27 @@ class Downloader(QObject):
         subtitle_retry_used = bool(process.property("subtitle_retry_used"))
         task_id = process.property("task_id")
         title = process.property("title") or "未知视频"
+        media_round = int(process.property('media_round') or 1)
+        media_attempt = int(process.property('media_attempt') or 1)
+        media_recovery = recovery_reason == 'media_403' and self._uses_media_token_rounds(process)
+        refreshed_token = False
+
+        if process.property('cancel_requested'):
+            return False
+        if media_recovery:
+            next_attempt = next_media_attempt(media_round, media_attempt)
+            if next_attempt is None:
+                return False
+            new_round, new_attempt = next_attempt
+            if new_round != media_round:
+                video_id = extract_youtube_video_id(process.property('url') or '')
+                refreshed, detail = invalidate_cached_youtube_pot(video_id or '')
+                if not refreshed:
+                    process.setProperty('token_refresh_error', detail)
+                    self.output_received.emit(task_id, detail)
+                    return False
+                refreshed_token = True
+            media_round, media_attempt = new_round, new_attempt
 
         if recovery_reason == "subtitle_download":
             args = build_subtitle_only_retry_args(args)
@@ -741,6 +786,8 @@ class Downloader(QObject):
             args=args,
         )
         new_process.setProperty("retry_count", retry_count)
+        new_process.setProperty('media_round', media_round)
+        new_process.setProperty('media_attempt', media_attempt)
         new_process.setProperty("subtitle_retry_used", subtitle_retry_used)
         new_process.setProperty(
             "subtitle_only_retry",
@@ -760,7 +807,12 @@ class Downloader(QObject):
             recovery_reason,
             "YouTube 下载失败，正在自动恢复",
         )
-        message = f"{recovery_message}（{attempt_number}/{total_attempts}）..."
+        if media_recovery:
+            context = self._announce_media_attempt(task_id, media_round, media_attempt)
+            action = '已清除旧 Token，将重新获取并续传' if refreshed_token else '重新解析地址并续传'
+            message = f'{context}：HTTP 403，{action}'
+        else:
+            message = f"{recovery_message}（{attempt_number}/{total_attempts}）..."
         self.output_received.emit(task_id, message)
         self.recovery_updated.emit(task_id, message)
         process.deleteLater()
@@ -1133,14 +1185,20 @@ class Downloader(QObject):
                     error,
                 )
                 if recovery_reason:
-                    self._restart_process(process, recovery_reason)
-                    return
+                    if self._restart_process(process, recovery_reason):
+                        return
             
             # 发送完成信号
             if success:
                 self.download_finished.emit(True, "", title, task_id)
             else:
                 error_msg = self._format_platform_error(error, platform, url, exit_code)
+                if process.property('token_refresh_error'):
+                    error_msg = process.property('token_refresh_error')
+                elif (self._uses_media_token_rounds(process)
+                      and self._classify_youtube_failure(output, error) == 'media_403'):
+                    error_msg = (f'第{int(process.property("media_round") or 1)}/3轮 '
+                                 f'第{int(process.property("media_attempt") or 1)}/3次失败：{error_msg}')
                 self.download_finished.emit(False, error_msg, title, task_id)
             
             # 从进程列表中移除

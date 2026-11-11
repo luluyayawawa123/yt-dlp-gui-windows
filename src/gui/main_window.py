@@ -938,6 +938,12 @@ class MainWindow(QMainWindow):
 
     def update_output(self, task_id, message):
         """更新下载进度显示"""
+        if message.startswith('[ATTEMPT]'):
+            task_widget = self.download_tasks.get(task_id)
+            if task_widget is not None:
+                task_widget.attempt_context = message[len('[ATTEMPT]'):]
+                self._set_task_progress_message(task_widget, task_widget.attempt_context + '，正在解析视频...')
+            return
         # 处理原生日志和普通消息
         if message.startswith("[RAW_LOG]"):
             # 这是原生日志信息，只发送到日志窗口，不更新UI进度
@@ -978,7 +984,8 @@ class MainWindow(QMainWindow):
                     line-height: 1.1;
                     padding: 2px 8px;
                 """)
-                task_widget.progress_label.setText("准备下载...")
+                task_widget.progress_label.setText('准备下载...')
+                task_widget.progress_label.setToolTip('')
                 task_widget.progress_bar.setValue(0)
                 task_widget.retry_button.hide()
                 
@@ -993,6 +1000,7 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
                 task_widget.progress_label.setText(message)
+                task_widget.progress_label.setToolTip('')
                 task_widget.status_label.setText("⏬ 下载中")
                 task_widget.status_label.setStyleSheet("""
                     color: #2196F3;
@@ -1337,7 +1345,7 @@ class MainWindow(QMainWindow):
         self._launch_pending_downloads()
 
     def _retry_failed_task(self, task_id):
-        """重试失败任务，保持任务卡片现有高度不变。"""
+        """手动重试刷新当前视频 Token，重新计轮；保留文件供断点续传。"""
         task_widget = self.download_tasks.get(task_id)
         if not task_widget:
             return
@@ -1356,7 +1364,7 @@ class MainWindow(QMainWindow):
             task_widget.download_path,
             dict(task_widget.format_options or {}),
             task_widget.browser,
-            refresh_pot_cache=False,
+            refresh_pot_cache=True,
         )
 
     def clear_download_history(self):

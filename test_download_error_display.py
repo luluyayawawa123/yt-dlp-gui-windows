@@ -50,6 +50,45 @@ class _FakeWindow:
 
 
 class DownloadErrorDisplayTests(unittest.TestCase):
+    def test_manual_retry_refreshes_token_and_preserves_request(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        window = _FakeWindow()
+        window.downloader = SimpleNamespace(processes=[])
+        window._prewarm_in_progress = False
+        window._queue_download_request = Mock()
+        task = window.download_tasks['Task-1']
+        task.source_url = 'https://www.youtube.com/watch?v=04rfnd1YdyU'
+        task.download_path = 'existing-output'
+        task.format_options = {'format': 'bv[ext=mp4]+ba[ext=m4a]'}
+        task.browser = 'firefox'
+        MainWindow._retry_failed_task(window, 'Task-1')
+        window._queue_download_request.assert_called_once_with(
+            [task.source_url], task.download_path, task.format_options,
+            'firefox', refresh_pot_cache=True,
+        )
+
+    def test_normal_progress_hides_rounds_and_preserves_speed_and_eta(self):
+        from types import SimpleNamespace
+        window = _FakeWindow()
+        window.task_log_history = {}
+        window.log_windows = {}
+        task = window.download_tasks['Task-1']
+        task.progress_bar = SimpleNamespace(setValue=lambda value: None)
+        MainWindow.update_output(window, 'Task-1', '[ATTEMPT]第3/3轮 第2/3次')
+        progress = '下载进度: 12% (大小: 305MiB, 速度: 3MiB/s, 剩余: 01:30)'
+        MainWindow.update_output(window, 'Task-1', progress)
+        self.assertEqual(task.progress_label.text, progress)
+        self.assertNotIn('轮', task.progress_label.text)
+        self.assertEqual(task.progress_label.tooltip, '')
+
+    def test_retry_context_is_shown_before_download_resumes(self):
+        window = _FakeWindow()
+        MainWindow.update_output(window, 'Task-1', '[ATTEMPT]第2/3轮 第1/3次')
+        task = window.download_tasks['Task-1']
+        self.assertEqual(task.attempt_context, '第2/3轮 第1/3次')
+        self.assertIn('第2/3轮 第1/3次', task.progress_label.text)
+
     def test_media_403_and_subtitle_failure_are_both_reported(self):
         downloader = Downloader()
         message = downloader._format_platform_error(
