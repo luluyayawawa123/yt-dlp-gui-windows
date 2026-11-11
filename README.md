@@ -40,7 +40,6 @@ v1.1.9 使用 yt-dlp 维护者提供的 SABR 实验内核，尚未合并到上�
 
 ## 下载失败时
 
-- Firefox 标清能播、4K 却一直转圈：先更新并重启 Firefox。2026-11-11 的一次实测中，更新后未更换出口 IP，网页 4K 播放和软件 4K 下载均恢复；具体根因未确定，此方法不保证解决所有 403。
 - 提示 `LOGIN_REQUIRED` / `Sign in to confirm you’re not a bot`：YouTube 要求登录验证，并非 PO Token 生成失败。请先检查 Firefox 是否仍处于登录状态，必要时更换出口网络后重试。
 - 已取得格式或 Token，却在下载媒体时收到 `HTTP 403`：先试软件的“下载重试”；若仍失败，请查看完整日志。更新 yt-dlp 或 PO Token 组件也不能保证消除所有 403。
 - 提示 DNS 解析失败：检查网络、VPN、代理和 DNS 设置。这与 Token 生成失败是两回事。
