@@ -1,5 +1,7 @@
 # YT-DLP GUI for Windows
 
+> **4K 下载报 403？先检查 Firefox 更新。** 如果同一视频在 Firefox 里标清能播、4K 却一直转圈，先更新并重启 Firefox，确认网页能播放 4K 后，再回软件重试。
+
 ![软件界面](screenshots/main.png)
 ![播放列表界面](screenshots/main-2.png)
 
@@ -8,7 +10,7 @@
 ## 下载与使用
 
 1. 从 [Releases](https://github.com/luluyayawawa123/yt-dlp-gui-windows/releases) 下载绿色版，解压后运行 `YT-DLP-GUI-Windows.exe`。绿色版文件夹可以移动或改名，但请保留其中的 `bin` 目录。
-2. 普通下载：先在 Firefox 中登录 YouTube，再把视频链接粘贴到主窗口。多个链接每行填一个；选好保存位置、画质和字幕后，点击“开始下载”。
+2. 普通下载：先在 Firefox 中登录 YouTube 并保持登录，再把视频链接粘贴到主窗口。多个链接每行填一个；选好保存位置、画质和字幕后，点击“开始下载”。
 3. 播放列表/频道下载：切换到对应窗口，输入播放列表或频道链接。可勾选“跳过曾经下载过的视频”，下次只下载新增内容。
 
 普通下载可选择最高画质、MP4 画质、MP3，或临时兜底的“斗地主模式”。实际能下载的清晰度取决于视频、网络和 YouTube 返回的格式，并非每个视频都有 4K。
@@ -40,6 +42,7 @@ v1.1.9 使用 yt-dlp 维护者提供的 SABR 实验内核，尚未合并到上�
 
 ## 下载失败时
 
+- Firefox 标清能播、4K 却一直转圈：先更新并重启 Firefox。2026-11-11 的一次实测中，更新后未更换出口 IP，网页 4K 播放和软件 4K 下载均恢复；具体根因未确定，此方法不保证解决所有 403。
 - 提示 `LOGIN_REQUIRED` / `Sign in to confirm you’re not a bot`：YouTube 要求登录验证，并非 PO Token 生成失败。请先检查 Firefox 是否仍处于登录状态，必要时更换出口网络后重试。
 - 已取得格式或 Token，却在下载媒体时收到 `HTTP 403`：先试软件的“下载重试”；若仍失败，请查看完整日志。更新 yt-dlp 或 PO Token 组件也不能保证消除所有 403。
 - 提示 DNS 解析失败：检查网络、VPN、代理和 DNS 设置。这与 Token 生成失败是两回事。
