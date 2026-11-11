@@ -3,8 +3,6 @@
 ![软件界面](screenshots/main.png)
 ![播放列表界面](screenshots/main-2.png)
 
-> **4K 下载报 403？先检查 Firefox 更新。** 如果同一视频在 Firefox 里标清能播、4K 却一直转圈，先更新并重启 Firefox，确认网页能播放 4K 后，再回软件重试。
-
 这是一个基于 yt-dlp 的 Windows 视频下载软件，支持单个或多个视频、YouTube 播放列表与频道下载，也支持选择画质、提取 MP3 和下载字幕。
 
 ## 下载与使用
