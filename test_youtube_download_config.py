@@ -57,7 +57,7 @@ class YouTubeDownloadConfigTests(unittest.TestCase):
                 "https://www.youtube.com/watch?v=LaAt4KJO4Dk",
                 output_path,
                 {
-                    "format": "b[height<=1080][protocol^=m3u8]",
+                    "format": "b[protocol^=m3u8]",
                     "youtube_hls_fallback": True,
                     "writesubtitles": True,
                     "subtitle_all_languages": True,
@@ -74,7 +74,7 @@ class YouTubeDownloadConfigTests(unittest.TestCase):
         self.assertIn("--no-plugin-dirs", args)
         self.assertFalse(any("youtubepot-bgutilscript:server_home=" in arg for arg in args))
         format_index = args.index("-f")
-        self.assertEqual(args[format_index + 1], "b[height<=1080][protocol^=m3u8]")
+        self.assertEqual(args[format_index + 1], "b[protocol^=m3u8]")
         self.assertIn("--write-subs", args)
         self.assertIn("--write-auto-subs", args)
 

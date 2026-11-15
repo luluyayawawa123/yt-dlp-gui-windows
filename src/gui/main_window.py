@@ -865,7 +865,7 @@ class MainWindow(QMainWindow):
             'bv[ext=mp4][height<=1080]+ba[ext=m4a]',
             'bv[ext=mp4][height<=480]+ba[ext=m4a]',
             'ba/b',
-            'b[height<=1080][protocol^=m3u8]',
+            'b[protocol^=m3u8]',
         ]
         format_options = {
             'format': quality_formats[quality_index]

@@ -45,7 +45,7 @@ class MediaTokenRoundTests(unittest.TestCase):
     def reason(self, process, error='ERROR: unable to download video data: HTTP Error 403'):
         return self.downloader._get_youtube_recovery_reason(process, '', error)
 
-    def test_nine_attempts_and_only_two_refreshes(self):
+    def test_twenty_four_attempts_and_only_five_refreshes(self):
         states = [(1, 1)]
         process = self.process
         original_args = list(process.property('command_args'))
@@ -59,23 +59,23 @@ class MediaTokenRoundTests(unittest.TestCase):
                 for key in ('url', 'task_id', 'command_args', 'working_directory'):
                     process.setProperty(key, self.process.property(key))
                 process.setProperty('saw_download_progress', True)
-            self.assertEqual(states, [(r, a) for r in range(1, 4) for a in range(1, 4)])
-            self.assertEqual(clear.call_count, 2)
+            self.assertEqual(states, [(r, a) for r in range(1, 7) for a in range(1, 5)])
+            self.assertEqual(clear.call_count, 5)
             clear.assert_called_with('04rfnd1YdyU')
-        self.assertIn('第2/3轮 第1/3次', self.messages[2])
-        self.assertIn('清除旧 Token', self.messages[2])
-        self.assertIn('第3/3轮 第3/3次', self.messages[-1])
+        self.assertIn('第2/6轮 第1/4次', self.messages[3])
+        self.assertIn('清除旧 Token', self.messages[3])
+        self.assertIn('第6/6轮 第4/4次', self.messages[-1])
 
     def test_cancel_never_refreshes_or_restarts(self):
         self.process.setProperty('cancel_requested', True)
-        self.process.setProperty('media_attempt', 3)
+        self.process.setProperty('media_attempt', 4)
         with patch('src.core.downloader.invalidate_cached_youtube_pot') as clear:
             self.assertIsNone(self.reason(self.process))
             self.assertFalse(self.downloader._restart_process(self.process, 'media_403'))
             clear.assert_not_called()
 
     def test_cache_refresh_failure_stops_without_extra_process(self):
-        self.process.setProperty('media_attempt', 3)
+        self.process.setProperty('media_attempt', 4)
         with patch('src.core.downloader.invalidate_cached_youtube_pot', return_value=(False, '缓存写入失败')):
             self.assertFalse(self.downloader._restart_process(self.process, 'media_403'))
         self.assertEqual(self.downloader.processes, [self.process])
@@ -89,9 +89,9 @@ class MediaTokenRoundTests(unittest.TestCase):
         self.assertIsNone(self.reason(self.process))
 
     def test_round_limits(self):
-        self.assertEqual(next_media_attempt(1, 3), (2, 1))
-        self.assertEqual(next_media_attempt(3, 2), (3, 3))
-        self.assertIsNone(next_media_attempt(3, 3))
+        self.assertEqual(next_media_attempt(1, 4), (2, 1))
+        self.assertEqual(next_media_attempt(6, 3), (6, 4))
+        self.assertIsNone(next_media_attempt(6, 4))
 
 
 if __name__ == '__main__':

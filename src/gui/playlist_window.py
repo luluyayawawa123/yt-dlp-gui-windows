@@ -8,6 +8,8 @@ from .subtitle_selector import SubtitleSelectorCheckBox
 from core.youtube_pot import invalidate_cached_youtube_pot, prewarm_youtube_pot
 from core.youtube_recovery import (
     MAX_YOUTUBE_RECOVERY_RETRIES,
+    MAX_MEDIA_TOKEN_ROUNDS,
+    MAX_MEDIA_ATTEMPTS_PER_ROUND,
     RECOVERY_MESSAGES,
     classify_youtube_failure,
     extract_failure_detail,
@@ -15,6 +17,7 @@ from core.youtube_recovery import (
     failure_title,
     recovery_total_attempts,
     should_retry_youtube_failure,
+    next_media_attempt,
 )
 from core.playlist_download import (
     PLAYLIST_CLIENT,
@@ -66,6 +69,8 @@ class PlaylistWindow(QMainWindow):
         self._playlist_metadata = None
         self._playlist_item_index = 0
         self._item_recovery_count = 0
+        self._media_round = 1
+        self._media_attempt = 1
         self._subtitle_recovery_count = 0
         self._process_subtitle_only = False
         self._process_is_subtitle_retry = False
@@ -392,6 +397,8 @@ class PlaylistWindow(QMainWindow):
         self.stdout_buffer = ""
         self.stderr_buffer = ""
         self._item_recovery_count = 0
+        self._media_round = 1
+        self._media_attempt = 1
         self._subtitle_recovery_count = 0
         self._process_subtitle_only = False
         self._process_is_subtitle_retry = False
@@ -1187,6 +1194,12 @@ class PlaylistWindow(QMainWindow):
         task_subtitle_only = bool(
             self._active_download_start.get("subtitle_only_mode")
         )
+        media_recovery = (
+            failure_code == "media_403"
+            and not task_subtitle_only
+            and not self._process_is_subtitle_retry
+        )
+        next_media = None
         if task_subtitle_only:
             retry_count = self._subtitle_recovery_count
             can_recover = should_retry_subtitle_only_failure(
@@ -1195,6 +1208,9 @@ class PlaylistWindow(QMainWindow):
             )
         elif self._process_is_subtitle_retry:
             can_recover = False
+        elif media_recovery:
+            next_media = next_media_attempt(self._media_round, self._media_attempt)
+            can_recover = next_media is not None
         else:
             if failure_code == "subtitle_download":
                 retry_count = self._subtitle_recovery_count
@@ -1212,6 +1228,7 @@ class PlaylistWindow(QMainWindow):
                 )
 
         if can_recover:
+            refresh_media_token = False
             if task_subtitle_only:
                 self._subtitle_recovery_count += 1
                 next_attempt = self._subtitle_recovery_count + 1
@@ -1234,6 +1251,9 @@ class PlaylistWindow(QMainWindow):
                     state["video_reason_code"] = ""
                     state["video_reason_text"] = ""
                 self._set_subtitle_status(item.video_id, "pending")
+            elif media_recovery:
+                refresh_media_token = next_media[0] != self._media_round
+                self._media_round, self._media_attempt = next_media
             else:
                 self._item_recovery_count += 1
                 next_attempt = self._item_recovery_count + 1
@@ -1246,14 +1266,24 @@ class PlaylistWindow(QMainWindow):
                 failure_code,
                 "YouTube 下载失败，正在重新解析",
             )
-            self.status_label.setText(
-                f"{message}（{next_attempt}/{total_attempts}）"
-            )
-            self._append_output_log(
-                f"⚠️ {message}"
-                f"{'并断点续传' if failure_code != 'subtitle_download' else ''}"
-                f"（第 {next_attempt}/{total_attempts} 次尝试）..."
-            )
+            if media_recovery:
+                context = self._media_attempt_context()
+                action = (
+                    "将刷新当前视频 Token 并续传"
+                    if refresh_media_token else "重新解析地址并续传"
+                )
+                message = f"{context}：HTTP 403，{action}"
+                self.status_label.setText(message)
+                self._append_output_log(f"⚠️ {message}")
+            else:
+                self.status_label.setText(
+                    f"{message}（{next_attempt}/{total_attempts}）"
+                )
+                self._append_output_log(
+                    f"⚠️ {message}"
+                    f"{'并断点续传' if failure_code != 'subtitle_download' else ''}"
+                    f"（第 {next_attempt}/{total_attempts} 次尝试）..."
+                )
             state = self._ensure_item_state(item.video_id, item.title)
             if state:
                 state["status"] = "unknown"
@@ -1270,9 +1300,12 @@ class PlaylistWindow(QMainWindow):
                 else 0,
                 lambda subtitle_only=(
                     task_subtitle_only or failure_code == "subtitle_download"
-                ):
-                    self._start_active_download_process(
-                        refresh_pot_cache=subtitle_only,
+                ), refresh_media_token=refresh_media_token,
+                active=self._active_download_start, item_index=self._playlist_item_index:
+                    self._restart_playlist_item(
+                        active,
+                        item_index,
+                        refresh_pot_cache=subtitle_only or refresh_media_token,
                         subtitle_only=subtitle_only,
                     ),
             )
@@ -1304,6 +1337,8 @@ class PlaylistWindow(QMainWindow):
         final_reason = self._format_failure_reason(
             self._ensure_item_state(item.video_id, item.title)
         )
+        if media_recovery:
+            final_reason = f"{self._media_attempt_context()}失败：{final_reason}"
         self._append_output_log(
             f"❌ {final_reason}"
         )
@@ -1617,11 +1652,23 @@ class PlaylistWindow(QMainWindow):
         self.config.save_config()
         self._start_active_download_process()
 
+    def _media_attempt_context(self):
+        return (f"第{self._media_round}/{MAX_MEDIA_TOKEN_ROUNDS}轮 "
+                f"第{self._media_attempt}/{MAX_MEDIA_ATTEMPTS_PER_ROUND}次")
+
+    def _restart_playlist_item(self, active, item_index, **kwargs):
+        """延迟重试只作用于原任务，取消或切换条目后不再启动。"""
+        if (self._cancel_requested
+                or self._active_download_start is not active
+                or self._playlist_item_index != item_index):
+            return
+        self._start_active_download_process(**kwargs)
+
     def _start_active_download_process(self, refresh_pot_cache=True, subtitle_only=False):
         """使用固定 mweb 客户端启动当前播放列表条目。"""
         active = self._active_download_start
         metadata = self._playlist_metadata
-        if not active or metadata is None:
+        if self._cancel_requested or not active or metadata is None:
             return
 
         if self._playlist_item_index >= len(metadata.items):
@@ -1708,6 +1755,8 @@ class PlaylistWindow(QMainWindow):
             )
             self.filename_label.setText(f"准备下载: {item.title}")
             self.status_label.setText(f"正在使用 {PLAYLIST_CLIENT} 解析视频...")
+            if not effective_subtitle_only and (self._media_round, self._media_attempt) != (1, 1):
+                self.status_label.setText(f"{self._media_attempt_context()}：正在解析下载地址")
         self._append_output_log(
             f"[{current_number}/{total}] {item.title}\n"
             f"固定客户端：{PLAYLIST_CLIENT}"
@@ -1838,6 +1887,8 @@ class PlaylistWindow(QMainWindow):
         """切换到下一个播放列表条目。"""
         self._playlist_item_index += 1
         self._item_recovery_count = 0
+        self._media_round = 1
+        self._media_attempt = 1
         self._subtitle_recovery_count = 0
         self._process_subtitle_only = False
         self._process_is_subtitle_retry = False

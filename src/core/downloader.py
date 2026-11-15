@@ -458,7 +458,7 @@ class Downloader(QObject):
                     'bv*+ba',
                     'bv[ext=mp4]+ba[ext=m4a]',
                     'bv*[height<=1080]+ba',
-                    'b[height<=1080][protocol^=m3u8]',
+                    'b[protocol^=m3u8]',
                 ]
                 if platform != 'youtube' and user_format in youtube_formats:
                     # 非YouTube平台但用户选择了YouTube特定格式，使用平台默认格式
@@ -1197,8 +1197,8 @@ class Downloader(QObject):
                     error_msg = process.property('token_refresh_error')
                 elif (self._uses_media_token_rounds(process)
                       and self._classify_youtube_failure(output, error) == 'media_403'):
-                    error_msg = (f'第{int(process.property("media_round") or 1)}/3轮 '
-                                 f'第{int(process.property("media_attempt") or 1)}/3次失败：{error_msg}')
+                    error_msg = (f'第{int(process.property("media_round") or 1)}/{MAX_MEDIA_TOKEN_ROUNDS}轮 '
+                                 f'第{int(process.property("media_attempt") or 1)}/{MAX_MEDIA_ATTEMPTS_PER_ROUND}次失败：{error_msg}')
                 self.download_finished.emit(False, error_msg, title, task_id)
             
             # 从进程列表中移除
