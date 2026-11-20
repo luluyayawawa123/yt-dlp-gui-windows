@@ -48,7 +48,7 @@ class FakeWindow:
     def _ensure_item_state(self, video_id, title=None):
         return self.states.setdefault(video_id, {})
 
-    def _set_subtitle_status(self, video_id, status):
+    def _set_subtitle_status(self, video_id, status, *reason):
         self._ensure_item_state(video_id)["subtitle_status"] = status
 
     def _append_output_log(self, message):
@@ -159,9 +159,51 @@ class PlaylistMediaRoundTests(unittest.TestCase):
     def test_subtitle_rescue_does_not_gain_media_rounds(self):
         self.window._process_is_subtitle_retry = True
         self.window._process_subtitle_only = True
+        self.window._subtitle_recovery_count = 5
         self.fail()
         self.assertFalse(self.callbacks)
         self.assertEqual(len(self.window.failures), 1)
+
+    def test_dns_during_subtitle_rescue_refreshes_within_subtitle_budget(self):
+        self.window._process_is_subtitle_retry = True
+        self.window._process_subtitle_only = True
+        self.window._subtitle_recovery_count = 4
+        self.window._item_recovery_count = 23
+        self.window._last_process_error = 'ERROR: getaddrinfo failed'
+        self.window._ensure_item_state('LaAt4KJO4Dk')['video_status'] = 'ok'
+        self.fail()
+        self.callbacks.pop()()
+        self.assertEqual(self.window._subtitle_recovery_count, 5)
+        self.assertEqual(self.window._item_recovery_count, 23)
+        self.assertEqual(self.window.starts[-1], {
+            'refresh_pot_cache': True, 'subtitle_only': True,
+        })
+        self.fail()
+        self.assertFalse(self.callbacks)
+        self.assertEqual(self.window.states['LaAt4KJO4Dk']['video_status'], 'ok')
+
+    def test_video_plus_subtitles_gets_five_subtitle_only_retries(self):
+        self.window._last_process_error = (
+            'ERROR: Unable to download video subtitles: Did not get any data blocks'
+        )
+        self.window._item_recovery_count = 23
+        for count in range(1, 6):
+            self.fail()
+            self.callbacks.pop()()
+            self.assertEqual(self.window._subtitle_recovery_count, count)
+            self.assertIn(f'{count + 1}/6', self.window.status_label.text)
+            self.assertEqual(self.window.starts[-1], {
+                'refresh_pot_cache': True, 'subtitle_only': True,
+            })
+            self.window._process_subtitle_only = True
+            self.window._process_is_subtitle_retry = True
+        self.assertEqual(self.window._item_recovery_count, 23)
+        self.assertEqual((self.window._media_round, self.window._media_attempt), (1, 1))
+        self.fail()
+        self.assertFalse(self.callbacks)
+        self.assertEqual(self.window.states['LaAt4KJO4Dk']['video_status'], 'ok')
+        self.assertEqual(len(self.window.failures), 1)
+        self.assertEqual(self.window.failures[0][3], 'subtitle')
 
     def test_login_stops_playlist_without_retry(self):
         self.window._last_process_error = "ERROR: Sign in to confirm you're not a bot"

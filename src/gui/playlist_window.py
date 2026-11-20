@@ -17,6 +17,7 @@ from core.youtube_recovery import (
     failure_title,
     recovery_total_attempts,
     should_retry_youtube_failure,
+    should_retry_subtitle_probe,
     next_media_attempt,
 )
 from core.playlist_download import (
@@ -1207,7 +1208,9 @@ class PlaylistWindow(QMainWindow):
                 retry_count,
             )
         elif self._process_is_subtitle_retry:
-            can_recover = False
+            can_recover = should_retry_subtitle_only_failure(
+                failure_code, self._subtitle_recovery_count,
+            )
         elif media_recovery:
             next_media = next_media_attempt(self._media_round, self._media_attempt)
             can_recover = next_media is not None
@@ -1229,6 +1232,10 @@ class PlaylistWindow(QMainWindow):
 
         if can_recover:
             refresh_media_token = False
+            subtitle_recovery = (
+                task_subtitle_only or self._process_is_subtitle_retry
+                or failure_code == "subtitle_download"
+            )
             if task_subtitle_only:
                 self._subtitle_recovery_count += 1
                 next_attempt = self._subtitle_recovery_count + 1
@@ -1238,7 +1245,7 @@ class PlaylistWindow(QMainWindow):
                     state["video_reason_code"] = ""
                     state["video_reason_text"] = ""
                 self._set_subtitle_status(item.video_id, "pending")
-            elif failure_code == "subtitle_download":
+            elif failure_code == "subtitle_download" or self._process_is_subtitle_retry:
                 self._subtitle_recovery_count += 1
                 next_attempt = self._subtitle_recovery_count + 1
                 state = self._ensure_item_state(item.video_id, item.title)
@@ -1281,7 +1288,7 @@ class PlaylistWindow(QMainWindow):
                 )
                 self._append_output_log(
                     f"⚠️ {message}"
-                    f"{'并断点续传' if failure_code != 'subtitle_download' else ''}"
+                    f"{'并断点续传' if not subtitle_recovery else ''}"
                     f"（第 {next_attempt}/{total_attempts} 次尝试）..."
                 )
             state = self._ensure_item_state(item.video_id, item.title)
@@ -1290,17 +1297,15 @@ class PlaylistWindow(QMainWindow):
                 state["reason_code"] = ""
                 state["reason_text"] = ""
                 state["pending_retry_exhausted"] = False
-                if failure_code != "subtitle_download":
+                if not subtitle_recovery:
                     state["video_status"] = "unknown"
                     state["video_reason_code"] = ""
                     state["video_reason_text"] = ""
             QTimer.singleShot(
                 SUBTITLE_RETRY_DELAY_MS
-                if task_subtitle_only or failure_code == "subtitle_download"
+                if subtitle_recovery
                 else 0,
-                lambda subtitle_only=(
-                    task_subtitle_only or failure_code == "subtitle_download"
-                ), refresh_media_token=refresh_media_token,
+                lambda subtitle_only=subtitle_recovery, refresh_media_token=refresh_media_token,
                 active=self._active_download_start, item_index=self._playlist_item_index:
                     self._restart_playlist_item(
                         active,
@@ -1322,7 +1327,7 @@ class PlaylistWindow(QMainWindow):
                 self._last_process_output,
                 self._last_process_error,
             )
-            if self._process_subtitle_only and state:
+            if task_subtitle_only and state:
                 state["video_status"] = "not_requested"
                 state["video_reason_code"] = ""
                 state["video_reason_text"] = ""
@@ -1767,7 +1772,7 @@ class PlaylistWindow(QMainWindow):
         self._set_download_button_cancel_mode()
         self.back_button.setEnabled(True)
 
-    def _start_subtitle_probe(self, item):
+    def _start_subtitle_probe(self, item, retry_count=0):
         """后台读取当前条目的作者字幕清单。"""
         if self._subtitle_probe_in_progress:
             return
@@ -1777,6 +1782,7 @@ class PlaylistWindow(QMainWindow):
             return
 
         self._subtitle_probe_in_progress = True
+        self._subtitle_probe_retry_count = retry_count
         self.current_item_id = item.video_id
         self.status_label.setText("正在读取可用字幕清单...")
         self._append_output_log("正在读取当前视频的作者字幕清单...")
@@ -1787,6 +1793,7 @@ class PlaylistWindow(QMainWindow):
         ).start()
 
     def _run_subtitle_probe(self, item, active):
+        process = None
         special_args = [
             "--extractor-args",
             f"youtubepot-bgutilscript:server_home={active['pot_server_home']}",
@@ -1817,13 +1824,17 @@ class PlaylistWindow(QMainWindow):
                 creationflags=creationflags,
             )
             self._subtitle_probe_process = process
+            if self._cancel_requested or self._active_download_start is not active:
+                process.kill()
+                process.communicate()
+                return
             stdout, stderr = process.communicate(timeout=120)
             if self._cancel_requested:
                 return
             if process.returncode != 0:
-                lines = (stderr or stdout).strip().splitlines()
-                detail = lines[-1] if lines else "未知错误"
-                self.subtitle_probe_finished.emit(item.video_id, None, detail)
+                self.subtitle_probe_finished.emit(
+                    item.video_id, None, extract_failure_detail(stdout, stderr),
+                )
                 return
 
             subtitles, automatic = parse_subtitle_metadata(stdout)
@@ -1835,13 +1846,15 @@ class PlaylistWindow(QMainWindow):
             )
             self.subtitle_probe_finished.emit(item.video_id, selection, "")
         except subprocess.TimeoutExpired:
-            if self._subtitle_probe_process:
-                self._subtitle_probe_process.kill()
+            if process:
+                process.kill()
+                process.communicate()
             self.subtitle_probe_finished.emit(item.video_id, None, "读取字幕清单超时")
         except Exception as exc:
             self.subtitle_probe_finished.emit(item.video_id, None, str(exc))
         finally:
-            self._subtitle_probe_process = None
+            if self._subtitle_probe_process is process:
+                self._subtitle_probe_process = None
 
     def _handle_subtitle_probe_finished(self, video_id, selection, error):
         """保存精确字幕标签，然后启动当前条目的媒体下载。"""
@@ -1859,6 +1872,16 @@ class PlaylistWindow(QMainWindow):
             return
 
         if selection is None:
+            retry_count = getattr(self, "_subtitle_probe_retry_count", 0)
+            if should_retry_subtitle_probe(
+                "", error, retry_count, "读取字幕清单超时" in error,
+            ):
+                self._start_subtitle_probe(metadata.items[self._playlist_item_index], retry_count + 1)
+                message = (f"字幕清单 DNS 解析失败或读取超时，正在重新读取"
+                           f"（{retry_count + 2}/{MAX_YOUTUBE_RECOVERY_RETRIES + 1}）")
+                self.status_label.setText(message)
+                self._append_output_log(f"⚠️ {message}")
+                return
             active["subtitle_tags_by_video_id"][video_id] = ()
             self._set_subtitle_status(
                 video_id,

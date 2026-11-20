@@ -78,7 +78,9 @@ class YouTubeRecoveryTests(unittest.TestCase):
         self.assertFalse(
             should_retry_youtube_failure(reason, MAX_SUBTITLE_RECOVERY_RETRIES)
         )
-        self.assertEqual(recovery_total_attempts(reason), 2)
+        self.assertEqual(MAX_SUBTITLE_RECOVERY_RETRIES, 5)
+        self.assertTrue(should_retry_youtube_failure(reason, 4))
+        self.assertEqual(recovery_total_attempts(reason), 6)
 
     def test_empty_media_response_is_not_misclassified_as_subtitle(self):
         reason = classify_youtube_failure(

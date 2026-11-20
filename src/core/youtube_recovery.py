@@ -3,7 +3,7 @@
 import re
 
 MAX_YOUTUBE_RECOVERY_RETRIES = 5
-MAX_SUBTITLE_RECOVERY_RETRIES = 1
+MAX_SUBTITLE_RECOVERY_RETRIES = 5
 MAX_MEDIA_TOKEN_ROUNDS = 6
 MAX_MEDIA_ATTEMPTS_PER_ROUND = 4
 
@@ -175,6 +175,15 @@ def recovery_total_attempts(reason: str | None) -> int:
 
 def failure_title(reason: str) -> str:
     return FAILURE_TITLES.get(reason, FAILURE_TITLES["download_failed"])
+
+
+def should_retry_subtitle_probe(output, error, retry_count, timed_out=False):
+    """字幕清单的临时 DNS 故障或读取超时，最多补试五次。"""
+    reason = classify_youtube_failure(output, error)
+    if reason in {"login_required", "cookies_unavailable"}:
+        return False
+    return (retry_count < MAX_YOUTUBE_RECOVERY_RETRIES
+            and (reason == "dns_resolution" or timed_out))
 
 
 def failure_advice(reason: str) -> str:

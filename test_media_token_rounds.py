@@ -86,12 +86,63 @@ class MediaTokenRoundTests(unittest.TestCase):
         self.process.setProperty('retry_count', 5)
         self.assertIsNone(self.reason(self.process, 'ERROR: getaddrinfo failed'))
         self.process.setProperty('subtitle_only_retry', True)
+        self.process.setProperty('subtitle_retry_count', 5)
         self.assertIsNone(self.reason(self.process))
 
     def test_round_limits(self):
         self.assertEqual(next_media_attempt(1, 4), (2, 1))
         self.assertEqual(next_media_attempt(6, 3), (6, 4))
         self.assertIsNone(next_media_attempt(6, 4))
+
+    def test_subtitle_failure_gets_five_independent_subtitle_only_retries(self):
+        process = self.process
+        process.setProperty('retry_count', 23)
+        process.setProperty('command_args', [
+            'yt-dlp.exe', '--cookies-from-browser', 'firefox',
+            '-f', 'bv+ba', '--write-subs', '--sub-langs', 'zh-Hans',
+            '-o', 'same.%(ext)s', self.process.property('url'),
+        ])
+        error = 'ERROR: Unable to download video subtitles: Did not get any data blocks'
+        with patch('src.core.downloader.invalidate_cached_youtube_pot', return_value=(True, '')) as clear:
+            for count in range(1, 6):
+                self.assertEqual(self.reason(process, error), 'subtitle_download')
+                args = process.property('command_args')
+                self.assertTrue(self.downloader._restart_process(process, 'subtitle_download'))
+                process = self.downloader.processes[0]
+                self.assertEqual(process.property('subtitle_retry_count'), count)
+                self.assertEqual(process.property('retry_count'), 23)
+                self.assertTrue(process.property('subtitle_only_retry'))
+                self.assertIn('--skip-download', process.args)
+                self.assertNotIn('-f', process.args)
+                self.assertIn('--cookies-from-browser', process.args)
+                self.assertIn('same.%(ext)s', process.args)
+                for key in ('url', 'task_id', 'working_directory'):
+                    process.setProperty(key, self.process.property(key))
+                process.setProperty('command_args', [args[0], *process.args])
+                self.assertIn(f'（{count + 1}/6）', self.messages[-1])
+            self.assertEqual(clear.call_count, 5)
+            self.assertIsNone(self.reason(process, error))
+
+    def test_cancelled_subtitle_retry_does_not_clear_or_restart(self):
+        self.process.setProperty('cancel_requested', True)
+        with patch('src.core.downloader.invalidate_cached_youtube_pot') as clear:
+            self.assertFalse(self.downloader._restart_process(self.process, 'subtitle_download'))
+            clear.assert_not_called()
+
+    def test_dns_during_subtitle_rescue_uses_subtitle_budget_and_refreshes(self):
+        self.process.setProperty('subtitle_only_retry', True)
+        self.process.setProperty('subtitle_retry_count', 4)
+        self.process.setProperty('retry_count', 23)
+        self.assertEqual(self.reason(self.process, 'ERROR: getaddrinfo failed'), 'dns_resolution')
+        with patch('src.core.downloader.invalidate_cached_youtube_pot', return_value=(True, '')) as clear:
+            self.assertTrue(self.downloader._restart_process(self.process, 'dns_resolution'))
+        process = self.downloader.processes[0]
+        self.assertEqual(process.property('subtitle_retry_count'), 5)
+        self.assertEqual(process.property('retry_count'), 23)
+        self.assertIn('--skip-download', process.args)
+        clear.assert_called_once()
+        process.setProperty('url', self.process.property('url'))
+        self.assertIsNone(self.reason(process, 'ERROR: getaddrinfo failed'))
 
 
 if __name__ == '__main__':

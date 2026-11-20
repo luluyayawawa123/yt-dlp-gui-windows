@@ -12,6 +12,7 @@ from .youtube_recovery import (
     failure_title,
     recovery_total_attempts,
     should_retry_youtube_failure,
+    should_retry_subtitle_probe,
     next_media_attempt,
     MAX_MEDIA_TOKEN_ROUNDS,
     MAX_MEDIA_ATTEMPTS_PER_ROUND,
@@ -559,6 +560,8 @@ class Downloader(QObject):
         process.setProperty("url", url)
         process.setProperty("working_directory", output_path)
         process.setProperty("download_args", download_args)
+        process.setProperty("probe_args", list(probe_args))
+        process.setProperty("probe_retry_count", 0)
         process.setProperty("subtitle_groups", list(groups))
         process.setProperty("allow_automatic", bool(allow_automatic))
         process.setProperty("cancel_requested", False)
@@ -599,6 +602,23 @@ class Downloader(QObject):
         download_args = list(process.property("download_args") or ())
         stdout = process.readAllStandardOutput().data().decode("utf-8", errors="replace")
         stderr = process.readAllStandardError().data().decode("utf-8", errors="replace")
+
+        probe_retry_count = int(process.property("probe_retry_count") or 0)
+        if exit_code != 0 and should_retry_subtitle_probe(
+            stdout, stderr, probe_retry_count, bool(process.property("probe_timed_out")),
+        ):
+            probe_args = list(process.property("probe_args") or ())
+            if probe_args:
+                probe_retry_count += 1
+                process.setProperty("probe_retry_count", probe_retry_count)
+                process.setProperty("probe_timed_out", False)
+                message = (f"字幕清单 DNS 解析失败或读取超时，正在重新读取"
+                           f"（{probe_retry_count + 1}/{MAX_YOUTUBE_RECOVERY_RETRIES + 1}）")
+                self.output_received.emit(task_id, message)
+                self.recovery_updated.emit(task_id, message)
+                process.start(probe_args[0], probe_args[1:])
+                process._subtitle_probe_timer.start(120_000)
+                return
 
         if exit_code == 0:
             try:
@@ -665,7 +685,7 @@ class Downloader(QObject):
         process.setProperty("retry_count", 0)
         process.setProperty("media_round", 1)
         process.setProperty("media_attempt", 1)
-        process.setProperty("subtitle_retry_used", False)
+        process.setProperty("subtitle_retry_count", 0)
         process.setProperty("subtitle_only_retry", False)
         process.setProperty("saw_download_progress", False)
         process.setProperty("cancel_requested", False)
@@ -710,8 +730,8 @@ class Downloader(QObject):
                 int(process.property('media_round') or 1),
                 int(process.property('media_attempt') or 1),
             ) else None
-        if reason == "subtitle_download":
-            retry_count = 1 if process.property("subtitle_retry_used") else 0
+        if reason == "subtitle_download" or process.property("subtitle_only_retry"):
+            retry_count = int(process.property("subtitle_retry_count") or 0)
         else:
             retry_count = int(process.property("retry_count") or 0)
         return reason if should_retry_youtube_failure(
@@ -741,7 +761,7 @@ class Downloader(QObject):
             return False
 
         retry_count = int(process.property("retry_count") or 0)
-        subtitle_retry_used = bool(process.property("subtitle_retry_used"))
+        subtitle_retry_count = int(process.property("subtitle_retry_count") or 0)
         task_id = process.property("task_id")
         title = process.property("title") or "未知视频"
         media_round = int(process.property('media_round') or 1)
@@ -766,15 +786,15 @@ class Downloader(QObject):
                 refreshed_token = True
             media_round, media_attempt = new_round, new_attempt
 
-        if recovery_reason == "subtitle_download":
+        if recovery_reason == "subtitle_download" or process.property("subtitle_only_retry"):
             args = build_subtitle_only_retry_args(args)
-            subtitle_retry_used = True
+            subtitle_retry_count += 1
             video_id = extract_youtube_video_id(process.property("url") or "")
             if video_id:
                 refreshed, refresh_message = invalidate_cached_youtube_pot(video_id)
                 if not refreshed:
                     self.output_received.emit(task_id, f"⚠️ {refresh_message}")
-            attempt_number = 2
+            attempt_number = subtitle_retry_count + 1
         else:
             retry_count += 1
             attempt_number = retry_count + 1
@@ -788,7 +808,7 @@ class Downloader(QObject):
         new_process.setProperty("retry_count", retry_count)
         new_process.setProperty('media_round', media_round)
         new_process.setProperty('media_attempt', media_attempt)
-        new_process.setProperty("subtitle_retry_used", subtitle_retry_used)
+        new_process.setProperty("subtitle_retry_count", subtitle_retry_count)
         new_process.setProperty(
             "subtitle_only_retry",
             recovery_reason == "subtitle_download" or bool(process.property("subtitle_only_retry")),
