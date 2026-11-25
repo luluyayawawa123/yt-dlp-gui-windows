@@ -1,5 +1,5 @@
 YouTube 下载技术与问题研究记录
-最近更新：2026-11-20
+最近更新：2026-11-25
 
 文档用途
 
@@ -21,7 +21,7 @@ YouTube 下载技术与问题研究记录
 普通下载中的“斗地主模式”：web_safari + Firefox Cookies + HLS，不使用 PO Token；2026-11-13 去掉人为设置的 1080P 上限，使用 b[protocol^=m3u8]，只选同时带画面和声音的最高可用 HLS 格式。官方对 web_safari 的说明列出的预合并 HLS 画质最高为 1080P，取消筛选上限不代表能获取 4K。勾选字幕时也会尝试自动字幕。它只是高画质方案失效时的临时兜底。
 
 当前内置组件：
-yt-dlp：沿用 v1.1.9 引入的 bashonly/yt-dlp@sabr 实验构建 2026.10.27.135913（b7685f01f），2026-11-05 替换。验证后已删除原 Nightly 的临时备份；v1.1.9 已发布，v1.1.10 此次不更换内核。
+yt-dlp：bashonly/yt-dlp@sabr 实验构建 2026.11.24.214335，纳入 v1.1.12。用户于 2026-11-25 通过“更新SABR内核.bat”升级，本地 --version 已核实。此前使用 2026.10.27.135913（b7685f01f）。继续保留 SABR 支持，不切换为 Stable/Nightly；客户端、Firefox Cookies、PO Token 方案和 GUI 下载逻辑未因本次内核升级改变。
 bgutil-ytdlp-pot-provider server：2.0.0
 bgutil-ytdlp-pot-provider 插件：2.0.0
 bgutils-js：4.0.3
@@ -29,7 +29,7 @@ Deno：2.9.7
 
 二、历史问题与解决结果
 
-旧版曾出现两类主要问题：
+已遇到的主要问题：
 
 1. BotGuard VM operation timed out
 旧版 web_creator + Firefox Cookies 在生成 PO Token 时出现过 VM 超时。该问题不能与媒体下载阶段的 HTTP 403 混为一谈。
@@ -51,7 +51,15 @@ Issue #8 样本 bDcpG7rThMw 已能列出 SABR 音视频格式，本次清单最�
 2026-11-05 用户普通模式实测 u05nNwhysEM：使用新内核、原 MWeb/Cookies 参数，通过 HTTPS 下载 4K 视频和英语作者字幕，用户确认最终任务完成；提供的阶段日志没有 403 或重试。该结果证明原链路兼容，不等于已验证报告者的 SABR-only 账号故障。
 测试文件和日志已清理，未提交或公开。使用 bin/更新SABR内核.bat 保持实验渠道，切回 Stable/Nightly 会失去本实验构建的 SABR 支持。
 
-相关记录：
+4. 2026-11-25 播放器 n 挑战求解失败，更新 SABR 内核后恢复
+样本 3xzIa6Hyx9g：旧 SABR 内核 2026.10.27.135913 已成功读取 Firefox Cookies、取得 GVS PO Token，但处理播放器 b485e332 时，Deno 执行挑战脚本报 TypeError: a.addOnDisposeCallback is not a function，随后出现 n challenge solving failed、Only images are available 和 Requested format is not available。用户重试两次仍相同。这次不是 DNS 或媒体 403，也不是日志所显示的 Token 获取失败，应先检查播放器 JS 适配和内核版本，而非增加换 Token 重试次数。
+官方 Issue #18123 报告同一错误，维护者明确说明 Stable 2026.11.23 已修复；最新 SABR 构建 2026.11.24.214335 已合入近期上游代码。为保留现有 SABR 下载能力，选择更新 SABR 渠道，不改用 Stable/Nightly。用户更新后重新尝试，反馈下载成功；本地版本号亦已确认。此结果验证了本次播放器报错的更新处理方向，不将其记为此前偶发 403 的修复，也不扩展为字幕或播放列表已重新实测。
+后续用户提供的实时日志确认实际调用 Invoking sabr downloader，选择 401+140-20，并恢复已有音视频片段；日志还记录了 0 bytes read 和读取超时后的内核自动重试（1/10、2/10）。这证明当前 SABR 内核有传输错误重试，不应将其误认为只支持手动续传；该阶段日志没有记录最终完成结果。
+https://github.com/yt-dlp/yt-dlp/issues/18123
+https://github.com/yt-dlp/yt-dlp/releases/tag/2026.11.23
+https://github.com/bashonly/yt-dlp/releases/tag/sabr
+
+相关历史记录：
 https://github.com/Brainicism/bgutil-ytdlp-pot-provider/issues/242
 https://github.com/LuanRT/BgUtils/pull/44
 https://github.com/Brainicism/bgutil-ytdlp-pot-provider/pull/243
